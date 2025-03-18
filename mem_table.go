@@ -2,6 +2,8 @@ package mini_lsm
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"github.com/huandu/skiplist"
 	"go.uber.org/zap"
@@ -10,28 +12,29 @@ import (
 	"mini_lsm/iterators"
 	"mini_lsm/pb"
 	"mini_lsm/table"
+	"reflect"
 	"sync"
 )
 
-// 核心方法定义
 type MemTable interface {
-	// 创建相关方法
-	//Create(id uint64) *MemTable
-	//CreateWithWAL(id uint64, path string) (*MemTable, error)
-	//RecoverFromWAL(id uint64, path string) (*MemTable, error)
+	Get(key *pb.Key) (*pb.Value, bool)
+	Put(key *pb.Key, value *pb.Value) error
+	PutBatch(entries []*KeyValue) error
+	Scan(start, end []byte) iterators.StorageIterator
 
-	// 核心操作方法
-	Get(key SklElement) ([]byte, bool)
-	Put(value *pb.KeyValue) error
-	PutBatch(data []*pb.KeyValue) error
-	//SyncWAL() error
-	//Scan(lower, upper Bound) *MTableIterator
+	// Storage operations
 	Flush(builder *table.SsTableBuilder) error
+	SyncWAL() error
 
-	// 元数据方法
+	// Metadata methods
 	ID() uint32
 	ApproximateSize() uint32
 	//IsEmpty() bool
+}
+
+type KeyValue struct {
+	Key   *pb.Key
+	Value *pb.Value
 }
 type SklElement struct {
 	Key       []byte
@@ -46,6 +49,8 @@ type MTable struct {
 	wal                 *Wal
 	logger              *zap.Logger
 }
+
+var ErrNullKey = errors.New("key or value is nil")
 
 // Create a new one MemTable
 
@@ -99,6 +104,7 @@ func (m *MTable) readFromWal() {
 		if err != nil {
 			m.logger.Panic(err.Error())
 		}
+
 		kv := pb.KeyValue{}
 		err = proto.Unmarshal(d, &kv)
 		if err != nil {
@@ -106,11 +112,15 @@ func (m *MTable) readFromWal() {
 		}
 		key := pb.Key{}
 		_ = proto.Unmarshal(kv.Key, &key)
-		out := keyMarshal(&key)
-		for i := 0; i < len(out); i++ {
-			fmt.Print(out[i])
+		element := SklElement{
+			Key:       key.Key,
+			Version:   key.Version,
+			Timestamp: key.Timestamp,
 		}
-		m.skl.Set(out, kv.Value)
+		//for i := 0; i < len(out); i++ {
+		//	fmt.Print(out[i])
+		//}
+		m.skl.Set(element, kv.Value)
 	}
 }
 
@@ -127,56 +137,182 @@ func NewMTablexx(id uint64, path string) (*MTable, error) {
 	// TODO: 实现恢复逻辑
 	return nil, nil
 }
+func (m *MTable) Get(key *pb.Key) (*pb.Value, bool) {
+	if key == nil {
+		return nil, false
+	}
+	// Convert pb.Key to SklElement for internal usage
+	element := pbKeytoSkl(key)
 
-// Get 方法
-func (m *MTable) Get(key SklElement) ([]byte, bool) {
+	// Use existing internal implementation
+	rawValue, found := m.getInternal(element)
+	if !found {
+		return nil, false
+	}
+
+	// Unmarshal the value
+	var value pb.Value
+	if err := proto.Unmarshal(rawValue, &value); err != nil {
+		return nil, false
+	}
+
+	return &value, true
+}
+func pbKeytoSkl(key *pb.Key) SklElement {
+	keyCopy := make([]uint8, len(key.Key))
+	copy(keyCopy, key.Key)
+	return SklElement{
+		Key:       keyCopy,
+		Version:   key.Version,
+		Timestamp: key.Timestamp,
+	}
+}
+
+// internalGet retrieves a value from the skiplist using the internal SklElement representation
+func (m *MTable) getInternal(key SklElement) ([]byte, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Look up in skiplist
+	//v := m.skl.Find(key)
 	v := m.skl.Get(key)
 	if v == nil {
 		return nil, false
 	}
-	return v.Value.([]byte), false
+
+	// Extract value
+	valueBytes, ok := v.Value.([]byte)
+	if !ok {
+		m.logger.Error("value in skiplist is not a byte slice",
+			zap.Any("key", key),
+			zap.Any("value_type", reflect.TypeOf(v.Value)))
+		return nil, false
+	}
+
+	return valueBytes, true
 }
 
 // Put 方法
-func (m *MTable) Put(value *pb.KeyValue) error {
-	write2wal, err := proto.Marshal(value)
-	key := pb.Key{}
-	proto.Unmarshal(value.Key, &key)
-	encodeKey := keyMarshal(&key)
-
-	m.wal.mu.Lock()
-	defer m.wal.mu.Unlock()
-	last, err := m.wal.LastIndex()
-	if err != nil {
-		m.logger.Panic("wal died", zap.Error(err))
+//
+//	func (m *MTable) Put(value *pb.KeyValue) error {
+//		write2wal, err := proto.Marshal(value)
+//		key := pb.Key{}
+//		proto.Unmarshal(value.Key, &key)
+//		encodeKey := keyMarshal(&key)
+//
+//		m.wal.mu.Lock()
+//		defer m.wal.mu.Unlock()
+//		last, err := m.wal.LastIndex()
+//		if err != nil {
+//			m.logger.Panic("wal died", zap.Error(err))
+//		}
+//		m.wal.Write(last+1, write2wal)
+//		m.skl.Set(encodeKey, value)
+//		return nil
+//	}
+func (m *MTable) Put(key *pb.Key, value *pb.Value) error {
+	// Marshal the key and value for storage
+	if key == nil || value == nil {
+		return ErrNullKey
 	}
-	m.wal.Write(last+1, write2wal)
-	m.skl.Set(encodeKey, value)
+	return m.putInternal(key, value)
+
+}
+
+// putInternal is the internal implementation of Put that works with raw KeyValue proto messages
+func (m *MTable) putInternal(key *pb.Key, value *pb.Value) error {
+	// Marshal for the WAL
+	keyBytes, err := proto.Marshal(key)
+	if err != nil {
+		return err
+	}
+
+	valueBytes, err := proto.Marshal(value)
+	if err != nil {
+		return err
+	}
+
+	keyVal := &pb.KeyValue{Key: keyBytes, Value: valueBytes}
+	write2wal, err := proto.Marshal(keyVal)
+	if err != nil {
+		return fmt.Errorf("failed to marshal KeyValue for WAL: %w", err)
+	}
+
+	//// Write to WAL first for durability
+	//m.wal.mu.Lock()
+	//defer m.wal.mu.Unlock()
+	//
+	//last, err := m.wal.LastIndex()
+	//if err != nil {
+	//	m.logger.Error("failed to get last WAL index", zap.Error(err))
+	//	return fmt.Errorf("WAL error: %w", err)
+	//}
+	//m.wal.W
+	//if err := m.wal.Write(last+1, write2wal); err != nil {
+	//	m.logger.Error("failed to writeTx to WAL", zap.Error(err))
+	//	return fmt.Errorf("WAL writeTx error: %w", err)
+	//}
+	// Async write to WAL
+	resultCh, err := m.wal.WriteAsync(write2wal)
+	if err != nil {
+		fmt.Printf("failed to write to WAL: %s", err.Error())
+		return err
+	}
+
+	// Start goroutine to monitor write result (optional)
+	go func() {
+		if err := <-resultCh; err != nil {
+			// Handle WAL write failure, such as logging or adding retry logic
+			m.logger.Error("async WAL write failed", zap.Error(err))
+			// In extreme cases, consider removing key-value pair from memory table or triggering emergency flush
+		}
+	}()
+	element := pbKeytoSkl(key)
+
+	// Store in skiplist
+	m.skl.Set(element, valueBytes)
+
+	// Update approximate size estimation
+	// This is optional but helps with determining when to flush
+	m.approximateSize += element.size() + uint32(len(value.Value))
+
 	return nil
 }
 
+func (s *SklElement) size() uint32 {
+	return uint32(len(s.Key) + 16)
+}
+
 // PutBatch 方法
-func (m *MTable) PutBatch(data []*pb.KeyValue) error {
+func (m *MTable) PutBatch(data []*KeyValue) error {
 	for _, kv := range data {
-		err := m.Put(kv)
+		err := m.putInternal(kv.Key, kv.Value)
 		if err != nil {
-			m.logger.Error("put failed", zap.String("key", string(kv.Key)), zap.Error(err))
+			m.logger.Error("put failed", zap.String("key", kv.Key.String()), zap.Error(err))
 		}
 	}
 	return nil
 }
 
-// Scan 方法
-//func (m *MTable) Scan(lower, upper []byte) *MTableIterator {
-//	// TODO: 实现范围扫描逻辑
-//	return nil
-//}
-//
+func (s *SklElement) marshal() []byte {
+	length := len(s.Key) + 16
+	out := make([]byte, length)
+	copy(out, s.Key)
+	binary.BigEndian.PutUint64(out[len(s.Key):], s.Version)
+
+	// ^ for compare
+	binary.BigEndian.PutUint64(out[len(s.Key)+8:], ^s.Timestamp)
+	return out
+}
 
 // Flush 方法
 func (m *MTable) Flush(builder *table.SsTableBuilder) error {
 	for elem := m.skl.Front(); elem != nil; elem = elem.Next() {
-		err := builder.Add(elem.Key().([]byte), elem.Value.([]byte))
+		ele, ok := elem.Key().(SklElement)
+		if !ok {
+			panic("invalid element")
+		}
+		err := builder.Add((&ele).marshal(), elem.Value.([]byte))
 		if err != nil {
 			m.logger.Error("flush failed", zap.Error(err))
 			return err
@@ -221,6 +357,29 @@ type MTableIterator struct {
 	current *skiplist.Element
 	end     []byte
 }
+
+// internalGet retrieves a value from the skiplist using the internal SklElement representation
+//func (m *MTable) internalGet(key SklElement) ([]byte, bool) {
+//	m.mu.Lock()
+//	defer m.mu.Unlock()
+//
+//	// Look up in skiplist
+//	v := m.skl.Get(key)
+//	if v == nil {
+//		return nil, false
+//	}
+//
+//	// Extract value
+//	valueBytes, ok := v.Value.([]byte)
+//	if !ok {
+//		m.logger.Error("value in skiplist is not a byte slice",
+//			zap.Any("key", key),
+//			zap.Any("value_type", reflect.TypeOf(v.Value)))
+//		return nil, false
+//	}
+//
+//	return valueBytes, true
+//}
 
 // NewMTableIterator creates a new iterator for the memtable
 func NewMTableIterator(skl *skiplist.SkipList, start, end []byte) *MTableIterator {

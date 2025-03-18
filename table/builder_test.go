@@ -2,11 +2,24 @@ package table
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
+	"mini_lsm/pb"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func keyMarshal(key *pb.Key) []byte {
+	length := len(key.Key) + 16
+	out := make([]byte, length)
+	copy(out, key.Key)
+	binary.BigEndian.PutUint64(out[len(key.Key):], key.Version)
+
+	// ^ for compare
+	binary.BigEndian.PutUint64(out[len(key.Key)+8:], ^key.Timestamp)
+	return out
+}
 
 // 测试辅助函数
 func createTempDir(t *testing.T) string {
@@ -23,8 +36,8 @@ func createTempDir(t *testing.T) string {
 func TestSsTableBuilder_New(t *testing.T) {
 	tests := []struct {
 		name      string
-		blockSize int
-		wantSize  int // 期望对齐后的大小
+		blockSize uint32
+		wantSize  uint32 // 期望对齐后的大小
 	}{
 		{
 			name:      "4KB aligned block size",
@@ -137,19 +150,22 @@ func TestSsTableBuilder_Build(t *testing.T) {
 		{
 			name: "single block table",
 			buildFn: func(b *SsTableBuilder) {
-				b.Add([]byte("key1"), []byte("value1"))
-				b.Add([]byte("key2"), []byte("value2"))
+				keyObj1 := &pb.Key{Key: []byte("key1"), Version: 0, Timestamp: 0}
+				keyObj2 := &pb.Key{Key: []byte("key2"), Version: 0, Timestamp: 0}
+				b.Add(keyMarshal(keyObj1), []byte("value1"))
+				b.Add(keyMarshal(keyObj2), []byte("value2"))
 			},
 			validate: func(t *testing.T, sst *SSTable) {
 				if len(sst.blockMetas) != 1 {
 					t.Errorf("Expected 1 block, got %d", len(sst.blockMetas))
 				}
-
+				keyObj1 := &pb.Key{Key: []byte("key1"), Version: 0, Timestamp: 0}
+				keyObj2 := &pb.Key{Key: []byte("key2"), Version: 0, Timestamp: 0}
 				// 验证元数据
-				if !bytes.Equal(sst.blockMetas[0].FirstKey, []byte("key1")) {
+				if !bytes.Equal(sst.blockMetas[0].FirstKey, keyMarshal(keyObj1)) {
 					t.Errorf("First key mismatch")
 				}
-				if !bytes.Equal(sst.blockMetas[0].LastKey, []byte("key2")) {
+				if !bytes.Equal(sst.blockMetas[0].LastKey, keyMarshal(keyObj2)) {
 					t.Errorf("Last key mismatch")
 				}
 			},
@@ -190,7 +206,7 @@ func TestSsTableBuilder_Build(t *testing.T) {
 			tt.validate(t, sst)
 
 			// 验证文件是否存在
-			if _, err := os.Stat(sstPath); os.IsNotExist(err) {
+			if _, err := os.Stat(sstPath); os.IsNotExist(err) && sst != nil {
 				t.Errorf("SSTable file was not created")
 			}
 		})

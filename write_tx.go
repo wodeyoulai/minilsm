@@ -13,14 +13,12 @@ const (
 )
 
 type WriteTx interface {
-	Lock()
-	Unlock()
 	// Commit commits a previous tx and begins a new writable one.
 	Commit() error
-	Put(key []byte, value []byte)
+	Put(key []byte, value []byte) error
 	Rollback()
 }
-type BatchTx struct {
+type WriteTxImpl struct {
 	*Tx
 	inner        *LsmStorageInner
 	readTs       uint64
@@ -37,9 +35,9 @@ type WriteEntry struct {
 	meta  byte // For delete markers etc
 }
 
-// NewWriteTx creates a new write transaction
-func NewWriteTx(inner *LsmStorageInner, mvcc *LsmMvccInner, serializable bool) *BatchTx {
-	tx := &BatchTx{
+// NewWriteTx creates a new writeTx transaction
+func NewWriteTx(inner *LsmStorageInner, mvcc *LsmMvccInner, serializable bool) *WriteTxImpl {
+	tx := &WriteTxImpl{
 		Tx:           &Tx{readLock: sync.RWMutex{}},
 		inner:        inner,
 		readTs:       mvcc.ReadTimestamp(),
@@ -50,7 +48,7 @@ func NewWriteTx(inner *LsmStorageInner, mvcc *LsmMvccInner, serializable bool) *
 	return tx
 }
 
-func (w *BatchTx) Put(key []byte, value []byte) error {
+func (w *WriteTxImpl) Put(key []byte, value []byte) error {
 	if w.closed.Load() {
 		return ErrTransactionClosed
 	}
@@ -63,7 +61,7 @@ func (w *BatchTx) Put(key []byte, value []byte) error {
 	return nil
 }
 
-func (w *BatchTx) Delete(key []byte) error {
+func (w *WriteTxImpl) Delete(key []byte) error {
 	if w.closed.Load() {
 		return ErrTransactionClosed
 	}
@@ -76,7 +74,7 @@ func (w *BatchTx) Delete(key []byte) error {
 	return nil
 }
 
-func (w *BatchTx) Commit() error {
+func (w *WriteTxImpl) Commit() error {
 	if w.closed.Load() {
 		return ErrTransactionClosed
 	}
@@ -98,14 +96,16 @@ func (w *BatchTx) Commit() error {
 	}
 
 	// Prepare batch of writes with commit timestamp
-	batch := make([]*pb.KeyValue, 0, len(w.writes))
+	batch := make([]*KeyValue, 0, len(w.writes))
 	for _, entry := range w.writes {
-		kv := pb.KeyValue{
-			Key: keyMarshal(&pb.Key{
+		kv := KeyValue{
+			Key: &pb.Key{
 				Key:       entry.key,
 				Timestamp: w.commitTs,
-			}),
-			Value: entry.value,
+			},
+			Value: &pb.Value{
+				Value: entry.value,
+			},
 		}
 		batch = append(batch, &kv)
 	}
@@ -121,7 +121,7 @@ func (w *BatchTx) Commit() error {
 	return nil
 }
 
-func (w *BatchTx) checkKeyModified(key []byte) (bool, error) {
+func (w *WriteTxImpl) checkKeyModified(key []byte) (bool, error) {
 	latestTs := w.mvcc.ReadTimestamp()
 	if latestTs <= w.readTs {
 		return false, nil
@@ -141,7 +141,7 @@ func (w *BatchTx) checkKeyModified(key []byte) (bool, error) {
 	return bytes.Equal(iterKey, key), nil
 }
 
-func (w *BatchTx) Rollback() {
+func (w *WriteTxImpl) Rollback() {
 	w.closed.Store(true)
 	w.writes = nil
 }

@@ -2,10 +2,23 @@ package table
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"path/filepath"
 	"testing"
 )
+
+// Helper function to marshal keys in the expected format
+func marshalTestKey(keyStr string, version uint64, timestamp uint64) []byte {
+	// Mimic the keyMarshal function from kv.go
+	key := []byte(keyStr)
+	length := len(key) + 16
+	out := make([]byte, length)
+	copy(out, key)
+	binary.BigEndian.PutUint64(out[len(key):], version)
+	binary.BigEndian.PutUint64(out[len(key)+8:], ^timestamp) // Note the bitwise NOT for timestamp
+	return out
+}
 
 // 测试辅助函数
 func createTestSSTable(t *testing.T, pairs []struct{ key, value []byte }) (*SSTable, string) {
@@ -35,9 +48,9 @@ func TestSsTableIterator_SeekToFirst(t *testing.T) {
 	testData := []struct {
 		key, value []byte
 	}{
-		{[]byte("key1"), []byte("value1")},
-		{[]byte("key2"), []byte("value2")},
-		{[]byte("key3"), []byte("value3")},
+		{marshalTestKey("key1", 1, 100), []byte("value1")},
+		{marshalTestKey("key2", 1, 100), []byte("value2")},
+		{marshalTestKey("key3", 1, 100), []byte("value3")},
 	}
 
 	sst, _ := createTestSSTable(t, testData)
@@ -50,7 +63,7 @@ func TestSsTableIterator_SeekToFirst(t *testing.T) {
 	}{
 		{
 			name:      "seek to first should return first key-value pair",
-			wantKey:   []byte("key1"),
+			wantKey:   marshalTestKey("key1", 1, 100),
 			wantValue: []byte("value1"),
 			wantValid: true,
 		},
@@ -69,7 +82,7 @@ func TestSsTableIterator_SeekToFirst(t *testing.T) {
 			}
 
 			if !bytes.Equal(iter.Key(), tt.wantKey) {
-				t.Errorf("Key() = %s, want %s", iter.Key(), tt.wantKey)
+				t.Errorf("Key() = %v, want %v", iter.Key(), tt.wantKey)
 			}
 
 			if !bytes.Equal(iter.Value(), tt.wantValue) {
@@ -83,9 +96,9 @@ func TestSsTableIterator_SeekToKey(t *testing.T) {
 	testData := []struct {
 		key, value []byte
 	}{
-		{[]byte("key1"), []byte("value1")},
-		{[]byte("key3"), []byte("value3")},
-		{[]byte("key5"), []byte("value5")},
+		{marshalTestKey("key1", 1, 100), []byte("value1")},
+		{marshalTestKey("key3", 1, 100), []byte("value3")},
+		{marshalTestKey("key5", 1, 100), []byte("value5")},
 	}
 
 	sst, _ := createTestSSTable(t, testData)
@@ -99,28 +112,28 @@ func TestSsTableIterator_SeekToKey(t *testing.T) {
 	}{
 		{
 			name:      "seek existing key",
-			seekKey:   []byte("key3"),
-			wantKey:   []byte("key3"),
+			seekKey:   marshalTestKey("key3", 1, 100),
+			wantKey:   marshalTestKey("key3", 1, 100),
 			wantValue: []byte("value3"),
 			wantValid: true,
 		},
 		{
 			name:      "seek non-existing key (between existing keys)",
-			seekKey:   []byte("key2"),
-			wantKey:   []byte("key3"),
+			seekKey:   marshalTestKey("key2", 1, 100),
+			wantKey:   marshalTestKey("key3", 1, 100),
 			wantValue: []byte("value3"),
 			wantValid: true,
 		},
 		{
 			name:      "seek key before first key",
-			seekKey:   []byte("key0"),
-			wantKey:   []byte("key1"),
+			seekKey:   marshalTestKey("key0", 1, 100),
+			wantKey:   marshalTestKey("key1", 1, 100),
 			wantValue: []byte("value1"),
 			wantValid: true,
 		},
 		{
 			name:      "seek key after last key",
-			seekKey:   []byte("key9"),
+			seekKey:   marshalTestKey("key9", 1, 100),
 			wantValid: false,
 		},
 	}
@@ -139,7 +152,7 @@ func TestSsTableIterator_SeekToKey(t *testing.T) {
 
 			if tt.wantValid {
 				if !bytes.Equal(iter.Key(), tt.wantKey) {
-					t.Errorf("Key() = %s, want %s", iter.Key(), tt.wantKey)
+					t.Errorf("Key() = %v, want %v", iter.Key(), tt.wantKey)
 				}
 
 				if !bytes.Equal(iter.Value(), tt.wantValue) {
@@ -154,9 +167,9 @@ func TestSsTableIterator_Next(t *testing.T) {
 	testData := []struct {
 		key, value []byte
 	}{
-		{[]byte("key1"), []byte("value1")},
-		{[]byte("key2"), []byte("value2")},
-		{[]byte("key3"), []byte("value3")},
+		{marshalTestKey("key1", 1, 100), []byte("value1")},
+		{marshalTestKey("key2", 1, 100), []byte("value2")},
+		{marshalTestKey("key3", 1, 100), []byte("value3")},
 	}
 
 	sst, _ := createTestSSTable(t, testData)
@@ -175,7 +188,7 @@ func TestSsTableIterator_Next(t *testing.T) {
 			}
 
 			if !bytes.Equal(iter.Key(), pair.key) {
-				t.Errorf("position %d: Key() = %s, want %s", i, iter.Key(), pair.key)
+				t.Errorf("position %d: Key() = %v, want %v", i, iter.Key(), pair.key)
 			}
 
 			if !bytes.Equal(iter.Value(), pair.value) {
@@ -199,9 +212,11 @@ func TestSsTableIterator_MultipleBlocks(t *testing.T) {
 	// 创建足够多的数据以跨越多个块
 	var testData []struct{ key, value []byte }
 	for i := 0; i < 1000; i++ {
+		keyStr := fmt.Sprintf("key%03d", i)
+		valueStr := fmt.Sprintf("value%03d", i)
 		testData = append(testData, struct{ key, value []byte }{
-			key:   []byte(fmt.Sprintf("key%03d", i)),
-			value: []byte(fmt.Sprintf("value%03d", i)),
+			key:   marshalTestKey(keyStr, 1, uint64(100+i)), // Use increasing timestamps
+			value: []byte(valueStr),
 		})
 	}
 
@@ -216,11 +231,11 @@ func TestSsTableIterator_MultipleBlocks(t *testing.T) {
 
 		count := 0
 		for iter.IsValid() {
-			expectedKey := fmt.Sprintf("key%03d", count)
+			expectedKey := marshalTestKey(fmt.Sprintf("key%03d", count), 1, uint64(100+count))
 			expectedValue := fmt.Sprintf("value%03d", count)
 
-			if !bytes.Equal(iter.Key(), []byte(expectedKey)) {
-				t.Errorf("Key() = %s, want %s", iter.Key(), expectedKey)
+			if !bytes.Equal(iter.Key(), expectedKey) {
+				t.Errorf("Key() doesn't match at position %d", count)
 			}
 
 			if !bytes.Equal(iter.Value(), []byte(expectedValue)) {

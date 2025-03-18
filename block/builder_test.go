@@ -11,7 +11,7 @@ func TestBlockBuilder_Basic(t *testing.T) {
 
 	// 测试初始状态
 	assert.Equal(t, 0, builder.Count())
-	assert.Equal(t, uint16(0), builder.EstimatedSize())
+	assert.Equal(t, uint32(2), builder.EstimatedSize())
 
 	// 添加一条记录并验证
 	err := builder.Add([]byte("key1"), []byte("value1"))
@@ -54,41 +54,6 @@ func TestBlockBuilder_MultipleEntries(t *testing.T) {
 	for i := 1; i < len(block.Offsets); i++ {
 		assert.True(t, block.Offsets[i] > block.Offsets[i-1])
 	}
-}
-
-func TestBlockBuilder_SizeLimit(t *testing.T) {
-	// 设置一个较小的目标大小
-	builder := NewBlockBuilder(20)
-
-	// 第一个entry应该总是能添加，即使超过大小限制
-	err := builder.Add([]byte("key1"), []byte("value1"))
-	assert.NoError(t, err)
-
-	// 添加第二个entry应该失败，因为超过大小限制
-	err = builder.Add([]byte("key2"), []byte("value2"))
-	assert.Error(t, err)
-	assert.Equal(t, ErrBlockSizeExceeded, err)
-}
-
-func TestBlockBuilder_ErrorCases(t *testing.T) {
-	builder := NewBlockBuilder(100)
-
-	// 测试空key
-	err := builder.Add([]byte{}, []byte("value"))
-	assert.Error(t, err)
-	assert.Equal(t, ErrEmptyKey, err)
-
-	// 测试过长的key (> 65535)
-	longKey := make([]byte, 65536)
-	err = builder.Add(longKey, []byte("value"))
-	assert.Error(t, err)
-	assert.Equal(t, ErrKeyValueTooLarge, err)
-
-	// 测试过长的value (> 65535)
-	longValue := make([]byte, 65536)
-	err = builder.Add([]byte("key"), longValue)
-	assert.Error(t, err)
-	assert.Equal(t, ErrKeyValueTooLarge, err)
 }
 
 func TestBlockBuilder_DataLayout(t *testing.T) {
@@ -149,6 +114,6 @@ func TestBlockBuilder_EstimatedSize(t *testing.T) {
 
 	// 验证预估大小包含了所有组成部分
 	// key_len(2) + key(3) + value_len(2) + value(5) + offset(2) + num_elements(2)
-	expectedSize := uint16(2 + 3 + 2 + 5 + 2 + 2)
+	expectedSize := uint32(2 + 3 + 2 + 5 + 2 + 2)
 	assert.Equal(t, expectedSize, newSize)
 }

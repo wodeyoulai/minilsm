@@ -14,7 +14,7 @@ type ReadTx interface {
 }
 
 // ReadTx represents a read transaction with MVCC
-type readTx struct {
+type ReadTxImpl struct {
 	*Tx
 	inner     *LsmStorageInner
 	readTs    uint64   // Transaction read timestamp
@@ -24,8 +24,8 @@ type readTx struct {
 }
 
 // NewReadTx creates a new read transaction
-func NewReadTx(inner *LsmStorageInner, mvcc *LsmMvccInner, serializable bool) *readTx {
-	tx := &readTx{
+func NewReadTx(inner *LsmStorageInner, mvcc *LsmMvccInner, serializable bool) *ReadTxImpl {
+	tx := &ReadTxImpl{
 		Tx:     &Tx{readLock: sync.RWMutex{}},
 		inner:  inner,
 		readTs: mvcc.ReadTimestamp(),
@@ -35,7 +35,7 @@ func NewReadTx(inner *LsmStorageInner, mvcc *LsmMvccInner, serializable bool) *r
 }
 
 // Get retrieves a value for a key, respecting transaction isolation
-func (r *readTx) Get(key []byte) ([]byte, error) {
+func (r *ReadTxImpl) Get(key []byte) ([]byte, error) {
 	if r.closed.Load() {
 		return nil, ErrTransactionClosed
 	}
@@ -50,11 +50,15 @@ func (r *readTx) Get(key []byte) ([]byte, error) {
 	}
 
 	// Use storage layer Get with MVCC timestamp
-	return r.inner.get(pbKey)
+	v, err := r.inner.get(pbKey)
+	if err != nil {
+		return nil, err
+	}
+	return v.Value, nil
 }
 
 // Scan returns a range of key-value pairs
-func (r *readTx) Scan(start, end []byte, limit int64) ([][]byte, [][]byte, error) {
+func (r *ReadTxImpl) Scan(start, end []byte, limit int64) ([][]byte, [][]byte, error) {
 	if r.closed.Load() {
 		return nil, nil, ErrTransactionClosed
 	}
@@ -89,6 +93,6 @@ func (r *readTx) Scan(start, end []byte, limit int64) ([][]byte, [][]byte, error
 	return keys, values, nil
 }
 
-func (r *readTx) Rollback() {
+func (r *ReadTxImpl) Rollback() {
 	r.closed.Store(true)
 }

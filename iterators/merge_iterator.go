@@ -95,6 +95,9 @@ func (m *MergeIterator[I]) Value() []byte {
 }
 
 func (m *MergeIterator[I]) IsValid() bool {
+	if m.current == nil {
+		return false
+	}
 	return m.current.iter.IsValid()
 }
 
@@ -131,9 +134,9 @@ func (m *MergeIterator[I]) Next() error {
 		m.curValue = nil
 		return nil
 	}
-
 	// Save the current key to detect duplicates
-	prevKey := m.current.iter.Key()
+	prevKey := make([]byte, len(m.current.iter.Key()))
+	copy(prevKey, m.current.iter.Key())
 
 	// Advance the current iterator
 	if err := m.current.iter.Next(); err != nil {

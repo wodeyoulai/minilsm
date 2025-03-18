@@ -105,6 +105,12 @@ func (l *LRUCache) addToHead(n *linkNode) {
 func (l *LRUCache) Close() {
 	close(l.done)
 }
+func (l *LRUCache) Clear() {
+	close(l.done)
+}
+func (l *LRUCache) Size() int32 {
+	return l.count.Load()
+}
 func (l *LRUCache) moveToHead() {
 	for {
 		select {

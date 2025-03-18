@@ -32,13 +32,12 @@ type TieredCompactionOptions struct {
 type ForceFullCompactionOptions struct {
 }
 
-// CompactionOptions 压缩选项配置
 type CompactionOptions struct {
-	// 策略类型
+	// the type of policy
 	Strategy TaskType
 
-	// 各种策略的具体选项
-	// 只有一个会被使用，其他都是 nil
+	// specific options for various strategies
+	// only one will be used the others are nil
 	LeveledOpts   *LeveledCompactionOptions
 	TieredOpts    *TieredCompactionOptions
 	SimpleOpts    *SimpleLeveledCompactionOptions
@@ -53,6 +52,7 @@ type CompactionTask interface {
 	LowerSstables() []uint32
 	OutputSstables() []uint32
 	UpperLevel() uint32
+	SetOutputSstables([]uint32)
 }
 
 // CompactionController interface defines the common behavior for all compaction strategies

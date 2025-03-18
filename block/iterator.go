@@ -3,120 +3,290 @@ package block
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"fmt"
 )
 
-// mini_lsm.BlockIterator used to traverse data in blocks
+// Common errors
+var (
+	ErrInvalidIterator = errors.New("invalid block iterator state")
+	ErrEndOfIterator   = errors.New("end of block iterator")
+)
 
+// BlockIterator provides iteration over entries in a Block
 type BlockIterator struct {
-	// the bottom layer mini_lsm.Block
+	// The underlying Block
 	block *Block
-	// The current key, empty means that the iterator is invalid
+
+	// Current key
 	key []byte
-	// The current value is in the range of mini_lsm.Block.data, corresponding to the current key
+
+	// Range for current value in Block.Data
 	valueRange struct {
-		start uint16
-		end   uint16
+		start uint32
+		end   uint32
 	}
-	// The index of the current key-value pair should be within the range [0, num_of_elements)
-	idx uint
-	// the first key in the block
-	firstKey []byte
-	// total num of block
-	numOfKeys uint
-	// end==true iterate over.active by seekToFirst
-	end bool
+
+	// Index of current entry [0, numOfKeys)
+	idx int
+
+	// Total number of entries
+	numOfEntries int
+
+	// Whether the iterator is valid
+	valid bool
 }
 
-// Newmini_lsm.BlockIterator create a new block iterator
-func newBlockIterator(block *Block) *BlockIterator {
+// NewBlockIterator creates a new block iterator
+func NewBlockIterator(block *Block) (*BlockIterator, error) {
+	if block == nil {
+		return nil, errors.New("block cannot be nil")
+	}
+
 	return &BlockIterator{
-		block: block,
-		key:   make([]byte, 0),
-		valueRange: struct {
-			start uint16
-			end   uint16
-		}{0, 0},
-		idx:       0,
-		firstKey:  make([]byte, 0),
-		numOfKeys: 0,
+		block:        block,
+		key:          nil,
+		valueRange:   struct{ start, end uint32 }{0, 0},
+		idx:          -1, // Not positioned yet
+		numOfEntries: len(block.Offsets),
+		valid:        false,
+	}, nil
+}
+
+// CreateAndSeekToFirst creates a block iterator and positions it at the first entry
+func CreateAndSeekToFirst(block *Block) (*BlockIterator, error) {
+	iterator, err := NewBlockIterator(block)
+	if err != nil {
+		return nil, err
 	}
+
+	if err := iterator.SeekToFirst(); err != nil {
+		return nil, err
+	}
+
+	return iterator, nil
 }
 
-// CreateAndSeekToFirst create a block iterator and locate the first entry
-func CreateAndSeekToFirst(block *Block) *BlockIterator {
-	b := newBlockIterator(block)
-	b.SeekToFirst()
-	return b
+// CreateAndSeekToKey creates a block iterator and positions it at the first entry >= key
+func CreateAndSeekToKey(block *Block, key []byte) (*BlockIterator, error) {
+	iterator, err := NewBlockIterator(block)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := iterator.SeekToKey(key); err != nil {
+		return nil, err
+	}
+
+	return iterator, nil
 }
 
-// CreateAndSeekToKey Create a block iterator and locate the first entry greater than or equal to the given key
-func CreateAndSeekToKey(block *Block, key []byte) *BlockIterator {
-	b := newBlockIterator(block)
-	b.SeekToKey(key)
-	return b
-}
-
-// Key return the key to the current entry
+// Key returns the current key
 func (it *BlockIterator) Key() []byte {
+	if !it.valid {
+		return nil
+	}
 	return it.key
 }
 
-// Value return the value of the current entry
+// Value returns the current value
 func (it *BlockIterator) Value() []byte {
+	if !it.valid || it.block == nil {
+		return nil
+	}
+
+	if int(it.valueRange.start) >= len(it.block.Data) || int(it.valueRange.end) > len(it.block.Data) {
+		return nil
+	}
+
 	return it.block.Data[it.valueRange.start:it.valueRange.end]
 }
 
-// IsValid return whether the iterator is valid
+// IsValid returns whether the iterator is valid (positioned at an entry)
 func (it *BlockIterator) IsValid() bool {
-	return it.numOfKeys > 0 && it.idx < it.numOfKeys && len(it.key) > 0
+	return it.valid
 }
 
-// SeekToFirst positioning to the first key in the block
-func (it *BlockIterator) SeekToFirst() {
-	numOfKeys := len(it.block.Offsets)
-	if numOfKeys == 0 {
-		it.key = nil // the tag iterator is invalid
-		return
+// SeekToFirst positions the iterator at the first entry
+func (it *BlockIterator) SeekToFirst() error {
+	if it.block == nil {
+		return ErrInvalidIterator
 	}
 
-	it.numOfKeys = uint(numOfKeys)
+	if it.numOfEntries == 0 {
+		it.valid = false
+		return nil
+	}
+
 	it.idx = 0
-	element := []byte{}
-	if numOfKeys == 1 {
-		element = it.block.Data[:len(it.block.Data)-4]
-	} else {
-		element = it.block.Data[:it.block.Offsets[1]]
-	}
-	length := binary.BigEndian.Uint16(element)
-	it.key = it.block.Data[2 : length+2]
-	it.firstKey = it.key
-	it.valueRange.start = length + 4
-	it.valueRange.end = length + 4 + binary.BigEndian.Uint16(it.block.Data[length+2:])
+	return it.readCurrentEntry()
 }
 
-// Next move to the next key in the block
-func (it *BlockIterator) Next() {
-	if !it.IsValid() {
-		return
+// Next advances to the next entry
+func (it *BlockIterator) Next() error {
+	if !it.valid {
+		return ErrInvalidIterator
 	}
+
 	it.idx++
-	if it.idx >= it.numOfKeys {
-		it.key = nil // the tag iterator is invalid
-		return
+	if it.idx >= it.numOfEntries {
+		it.valid = false
+		return ErrEndOfIterator
 	}
-	keyStart := it.valueRange.end
-	keyLength := binary.BigEndian.Uint16(it.block.Data[keyStart : keyStart+2])
-	keyEnd := keyStart + 2 + keyLength
-	it.key = it.block.Data[keyStart+2 : keyEnd]
-	it.valueRange.start = keyEnd + 2
-	it.valueRange.end = keyEnd + 2 + binary.BigEndian.Uint16(it.block.Data[keyEnd:])
+
+	return it.readCurrentEntry()
 }
 
-// SeekToKey Position to the first entry greater than or equal to the given key
-// Note: You should assume that the key-value pairs in the block are sorted when added by the callee
-func (it *BlockIterator) SeekToKey(key []byte) {
-	it.SeekToFirst()
-	for bytes.Compare(it.Key(), key) < 0 && it.IsValid() {
-		it.Next()
+// SeekToKey positions the iterator at the first entry >= key
+func (it *BlockIterator) SeekToKey(key []byte) error {
+	if it.block == nil {
+		return ErrInvalidIterator
 	}
+
+	// If block is empty, there's nothing to seek
+	if it.numOfEntries == 0 {
+		it.valid = false
+		return nil
+	}
+
+	// Binary search for the first entry >= key
+	left, right := 0, it.numOfEntries-1
+
+	// Sequential scan is often faster for small blocks
+	if it.numOfEntries < 8 {
+		return it.linearSeekToKey(key)
+	}
+
+	for left <= right {
+		mid := (left + right) / 2
+
+		// Read key at mid
+		if err := it.readEntry(mid); err != nil {
+			return err
+		}
+
+		cmp := bytes.Compare(it.key, key)
+		if cmp == 0 {
+			// Found exact match
+			it.idx = mid
+			it.valid = true
+			return nil
+		} else if cmp < 0 {
+			// Current key is smaller, look in right half
+			left = mid + 1
+		} else {
+			// Current key is larger, look in left half
+			right = mid - 1
+		}
+	}
+
+	// Position at first key >= target
+	it.idx = left
+	if it.idx >= it.numOfEntries {
+		it.valid = false
+		return nil
+	}
+
+	return it.readCurrentEntry()
+}
+
+// linearSeekToKey performs a linear scan to find the first entry >= key
+func (it *BlockIterator) linearSeekToKey(key []byte) error {
+	if err := it.SeekToFirst(); err != nil {
+		return err
+	}
+
+	for it.valid {
+		if bytes.Compare(it.key, key) >= 0 {
+			return nil
+		}
+
+		if err := it.Next(); err != nil && err != ErrEndOfIterator {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// readCurrentEntry reads the entry at the current index
+func (it *BlockIterator) readCurrentEntry() error {
+	return it.readEntry(it.idx)
+}
+
+// readEntry reads the entry at the specified index
+func (it *BlockIterator) readEntry(index int) error {
+	if index < 0 || index >= it.numOfEntries {
+		it.valid = false
+		return fmt.Errorf("index out of range: %d", index)
+	}
+
+	entryOffset := it.block.Offsets[index]
+
+	// Ensure we have at least 2 bytes for key length
+	if int(entryOffset+2) > len(it.block.Data) {
+		it.valid = false
+		return fmt.Errorf("invalid entry offset: %d", entryOffset)
+	}
+
+	// Read key length
+	keyLen := binary.BigEndian.Uint16(it.block.Data[entryOffset : entryOffset+2])
+	keyStart := entryOffset + 2
+	keyEnd := keyStart + keyLen
+
+	// Ensure key is within bounds
+	if int(keyEnd+2) > len(it.block.Data) {
+		it.valid = false
+		return fmt.Errorf("key extends beyond block data: offset=%d, len=%d", keyStart, keyLen)
+	}
+
+	// Read value length
+	valueLen := binary.BigEndian.Uint16(it.block.Data[keyEnd : keyEnd+2])
+	valueStart := keyEnd + 2
+	valueEnd := valueStart + valueLen
+
+	// Ensure value is within bounds
+	if int(valueEnd) > len(it.block.Data) {
+		it.valid = false
+		return fmt.Errorf("value extends beyond block data: offset=%d, len=%d", valueStart, valueLen)
+	}
+
+	// Copy key
+	if it.key == nil || cap(it.key) < int(keyLen) {
+		it.key = make([]byte, keyLen)
+	} else {
+		it.key = it.key[:keyLen]
+	}
+	copy(it.key, it.block.Data[keyStart:keyEnd])
+
+	// Set value range
+	it.valueRange.start = uint32(valueStart)
+	it.valueRange.end = uint32(valueEnd)
+
+	it.valid = true
+	return nil
+}
+
+// Reset resets the iterator to be reused with a new block
+func (it *BlockIterator) Reset(block *Block) error {
+	if block == nil {
+		return errors.New("block cannot be nil")
+	}
+
+	it.block = block
+	it.key = nil
+	it.valueRange.start = 0
+	it.valueRange.end = 0
+	it.idx = -1
+	it.numOfEntries = len(block.Offsets)
+	it.valid = false
+
+	return nil
+}
+
+// Close releases resources and invalidates the iterator
+func (it *BlockIterator) Close() {
+	it.block = nil
+	it.key = nil
+	it.valid = false
 }

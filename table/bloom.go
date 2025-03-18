@@ -10,12 +10,14 @@ type BloomFilter struct {
 }
 
 func NewBloomFilter(expectedItems int, falsePositiveRate float64) *BloomFilter {
-	// Calculate required number of bits
-	m := uint(-float64(expectedItems) * math.Log(falsePositiveRate) / (math.Log(2) * math.Log(2)))
-	k := uint(math.Ceil(math.Log(2) * float64(m) / float64(expectedItems)))
+	// 调整公式计算适当的位数和哈希函数数量
+	// 公式优化：m = -n*ln(p)/(ln(2)²)
+	m := uint(math.Ceil(-float64(expectedItems) * math.Log(falsePositiveRate) / (math.Log(2) * math.Log(2))))
+	// 公式优化：k = (m/n)*ln(2)
+	k := uint(math.Max(1, math.Round(float64(m)/float64(expectedItems)*math.Log(2))))
 
 	return &BloomFilter{
-		bits: make([]byte, (m+7)/8), // Round up to nearest byte
+		bits: make([]byte, (m+7)/8), // 向上取整到最接近的字节
 		k:    k,
 		m:    m,
 	}
@@ -41,10 +43,15 @@ func (bf *BloomFilter) MayContain(key []byte) bool {
 }
 
 func (bf *BloomFilter) hash(key []byte, seed uint) uint {
-	// Simple hash mixing function
-	h := uint(seed) + 1
+	// 使用两个不同的哈希函数增强分布性
+	h1 := uint(0x9e3779b9) // 一个质数
+	h2 := uint(0x85ebca6b) // 另一个质数
+
 	for _, b := range key {
-		h = h*131 + uint(b)
+		h1 = ((h1 << 5) + h1) ^ uint(b) // 类似 FNV-1a
+		h2 = ((h2<<5)+h2)*33 + uint(b)  // 混合乘法散列
 	}
-	return h
+
+	// 使用不同的种子生成不同的哈希值
+	return h1 + seed*h2
 }

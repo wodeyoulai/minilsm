@@ -1,13 +1,16 @@
 package mini_lsm
 
+import "errors"
+
 type SimpleLeveledCompactionOptions struct {
 	// lower files / upper files
 	SizeRatioPercent uint32
-
 	// L0->L1
 	Level0FileNumCompactionTrigger int
 
-	MaxLevels int
+	// l1->l2...
+	ThresholdFilesCount uint32
+	MaxLevels           uint32
 }
 
 func NewDefaultSimpleLeveledCompactionOptions() *SimpleLeveledCompactionOptions {
@@ -39,7 +42,9 @@ func (s *SimpleLeveledCompactionTask) UpperLevel() uint32 {
 func (s *SimpleLeveledCompactionTask) OutputSstables() []uint32 {
 	return s.OutputSSTIds
 }
-
+func (s *SimpleLeveledCompactionTask) SetOutputSstables(tables []uint32) {
+	s.OutputSSTIds = tables
+}
 func (s *SimpleLeveledCompactionTask) TaskType() TaskType {
 	return TaskTypeSimple
 }
@@ -52,11 +57,11 @@ type SimpleLeveledCompactionController struct {
 	opts *SimpleLeveledCompactionOptions
 }
 
-func NewDefaultSimpleLeveledCompactionController() *SimpleLeveledCompactionController {
-	return &SimpleLeveledCompactionController{NewDefaultSimpleLeveledCompactionOptions()}
+func NewDefaultSimpleLeveledCompactionController(opt *SimpleLeveledCompactionOptions) *SimpleLeveledCompactionController {
+	return &SimpleLeveledCompactionController{opt}
 }
 
-func (s *SimpleLeveledCompactionController) GenerateCompactionTask(snapshot *LsmStorageState) (*SimpleLeveledCompactionTask, error) {
+func (s *SimpleLeveledCompactionController) GenerateCompactionTask(snapshot *LsmStorageState) (CompactionTask, error) {
 
 	// 1. First check whether the number of L0 files triggers compression
 	if len(snapshot.l0SSTables) >= s.opts.Level0FileNumCompactionTrigger {
@@ -74,18 +79,30 @@ func (s *SimpleLeveledCompactionController) GenerateCompactionTask(snapshot *Lsm
 		upperLevelFiles := len(snapshot.levels[level-1].ssTables)
 		lowerLevelFiles := len(snapshot.levels[level].ssTables)
 
-		// If the upper layer is not empty, and the number of files in the lower layer/upper layer is < size_ratio_percent
-		if upperLevelFiles > 0 {
-			ratio := (lowerLevelFiles * 100) / upperLevelFiles
-			if ratio < int(s.opts.SizeRatioPercent) {
+		if lowerLevelFiles == 0 {
+			// 只有当上层文件数量达到阈值时才触发压缩
+			if uint32(upperLevelFiles) >= s.opts.ThresholdFilesCount {
 				return &SimpleLeveledCompactionTask{
 					upperLevel:              uint32(level),
 					UpperLevelSSTIds:        snapshot.levels[level-1].ssTables,
 					LowerLevel:              uint32(level) + 1,
-					LowerLevelSSTIds:        snapshot.levels[level].ssTables,
+					LowerLevelSSTIds:        []uint32{}, //
 					IsLowerLevelBottomLevel: level+1 == len(snapshot.levels),
 				}, nil
 			}
+			// 否则不触发压缩
+			continue
+		}
+		// If the upper layer is not empty, and the number of files in the lower layer/upper layer is < size_ratio_percent
+		ratio := (lowerLevelFiles * 100) / upperLevelFiles
+		if ratio < int(s.opts.SizeRatioPercent) {
+			return &SimpleLeveledCompactionTask{
+				upperLevel:              uint32(level),
+				UpperLevelSSTIds:        snapshot.levels[level-1].ssTables,
+				LowerLevel:              uint32(level) + 1,
+				LowerLevelSSTIds:        snapshot.levels[level].ssTables,
+				IsLowerLevelBottomLevel: level+1 == len(snapshot.levels),
+			}, nil
 		}
 	}
 	// no tasks that require compression
@@ -93,20 +110,26 @@ func (s *SimpleLeveledCompactionController) GenerateCompactionTask(snapshot *Lsm
 
 }
 
-func (s *SimpleLeveledCompactionController) ApplyCompactionResult(snapshot *LsmStorageState, task *SimpleLeveledCompactionTask, inRecovery bool) error {
+func (s *SimpleLeveledCompactionController) ApplyCompactionResult(snapshot *LsmStorageState, task CompactionTask, inRecovery bool) error {
 	// List of files to be removed
+	realTask := &SimpleLeveledCompactionTask{}
+	if v, ok := task.(*SimpleLeveledCompactionTask); ok {
+		realTask = v
+	} else {
+		return errors.New("invalid compaction task")
+	}
 	filesToRemove := make([]uint32, 0)
 
 	// Add all files involved in compaction to the removal list
-	filesToRemove = append(filesToRemove, task.UpperLevelSSTIds...)
-	filesToRemove = append(filesToRemove, task.LowerLevelSSTIds...)
+	filesToRemove = append(filesToRemove, realTask.UpperLevelSSTIds...)
+	filesToRemove = append(filesToRemove, realTask.LowerLevelSSTIds...)
 
 	// Handle L0 to L1 compaction
-	if task.upperLevel == 0 {
+	if realTask.upperLevel == 0 {
 		// Remove corresponding SST files from L0
 		newL0Files := make([]uint32, 0)
 		for _, file := range snapshot.l0SSTables {
-			if !contains(task.UpperLevelSSTIds, file) {
+			if !contains(realTask.UpperLevelSSTIds, file) {
 				newL0Files = append(newL0Files, file)
 			}
 		}
@@ -114,12 +137,12 @@ func (s *SimpleLeveledCompactionController) ApplyCompactionResult(snapshot *LsmS
 		// Remove corresponding SST files from L1
 		newL1Files := make([]uint32, 0)
 		for _, file := range snapshot.levels[0].ssTables {
-			if !contains(task.LowerLevelSSTIds, file) {
+			if !contains(realTask.LowerLevelSSTIds, file) {
 				newL1Files = append(newL1Files, file)
 			}
 		}
 		// Add newly generated SST files to L1
-		newL1Files = append(newL1Files, task.OutputSSTIds...)
+		newL1Files = append(newL1Files, realTask.OutputSSTIds...)
 
 		snapshot.mu.Lock()
 		snapshot.l0SSTables = newL0Files
@@ -127,13 +150,13 @@ func (s *SimpleLeveledCompactionController) ApplyCompactionResult(snapshot *LsmS
 		snapshot.mu.Unlock()
 	} else {
 		// Handle compaction between other levels
-		upperLevel := task.upperLevel
-		lowerLevel := task.LowerLevel
+		upperLevel := realTask.upperLevel
+		lowerLevel := realTask.LowerLevel
 
 		// Remove files from upper level
 		newUpperFiles := make([]uint32, 0)
 		for _, file := range snapshot.levels[upperLevel-1].ssTables {
-			if !contains(task.UpperLevelSSTIds, file) {
+			if !contains(realTask.UpperLevelSSTIds, file) {
 				newUpperFiles = append(newUpperFiles, file)
 			}
 		}
@@ -141,18 +164,30 @@ func (s *SimpleLeveledCompactionController) ApplyCompactionResult(snapshot *LsmS
 		// Remove files from lower level
 		newLowerFiles := make([]uint32, 0)
 		for _, file := range snapshot.levels[lowerLevel-1].ssTables {
-			if !contains(task.LowerLevelSSTIds, file) {
+			if !contains(realTask.LowerLevelSSTIds, file) {
 				newLowerFiles = append(newLowerFiles, file)
 			}
 		}
 		// Add newly generated SST files to lower level
-		newLowerFiles = append(newLowerFiles, task.OutputSSTIds...)
+		newLowerFiles = append(newLowerFiles, realTask.OutputSSTIds...)
 		snapshot.mu.Lock()
 		snapshot.levels[upperLevel-1].ssTables = newUpperFiles
 		snapshot.levels[lowerLevel-1].ssTables = newLowerFiles
 		snapshot.mu.Unlock()
 	}
 	return nil
+}
+
+func (s *SimpleLeveledCompactionController) FlushToL0() bool {
+	//TODO implement me
+	return true
+}
+func toUint(vals []uint16) []uint {
+	result := make([]uint, len(vals))
+	for i, v := range vals {
+		result[i] = uint(v)
+	}
+	return result
 }
 
 // Helper function: Check if an array contains a specific element
@@ -163,15 +198,4 @@ func contains(arr []uint32, target uint32) bool {
 		}
 	}
 	return false
-}
-func (s *SimpleLeveledCompactionController) FlushToL0() bool {
-	//TODO implement me
-	panic("implement me")
-}
-func toUint(vals []uint16) []uint {
-	result := make([]uint, len(vals))
-	for i, v := range vals {
-		result[i] = uint(v)
-	}
-	return result
 }

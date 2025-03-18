@@ -15,7 +15,7 @@ const (
 
 // LsmMvccInner implements the core MVCC mechanism
 type LsmMvccInner struct {
-	// Lock for write operations
+	// Lock for writeTx operations
 	writeLock sync.Mutex
 	// Lock for committing transactions
 	commitLock sync.Mutex
@@ -109,7 +109,7 @@ func (l *LsmMvccInner) HasConflict(txn *CommittedTxnData) bool {
 		}
 
 		otherTxn := value.(*CommittedTxnData)
-		// Check for overlapping write sets
+		// Check for overlapping writeTx sets
 		for hash := range txn.KeyHashes {
 			if _, exists := otherTxn.KeyHashes[hash]; exists {
 				hasConflict = true

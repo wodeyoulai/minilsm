@@ -1,16 +1,77 @@
 package mini_lsm
 
-import "mini_lsm/iterators"
+import (
+	"bytes"
+	"mini_lsm/iterators"
+)
 
 // iterators.StorageIterator defines the interface for storage iteration
-// Note: In Go we use []byte for keys since we can't replicate Rust's
-// generic associated type KeyType<'a> with lifetime parameters
 
-//type LsmIteratorInner struct {
-//	iterators.TwoMergeIterator
-//	//memIter *iterators.MergeIterator[MemTableIterator]
-//	//ssIter  *iterators.MergeIterator[table.SSTableIterator]
-//}
+// Iterator represents a way to iterate over the LSM tree
+type Iterator[I iterators.StorageIterator] struct {
+	inner *iterators.MergeIterator[I]
+	start []byte
+	end   []byte
+	valid bool
+}
+
+func NewIterator[I iterators.StorageIterator](iters []I, start, end []byte, valid bool) *Iterator[I] {
+	// start by creating an internal one MergeIterator
+	mergeIter := iterators.NewMergeIterator(iters)
+
+	// then create and return to ours Iterator
+	it := &Iterator[I]{
+		inner: mergeIter,
+		start: start,
+		end:   end,
+		valid: true, // The initial state is set to invalid until the first call Next()
+	}
+
+	return it
+}
+
+// Iterator methods
+
+func (it *Iterator[I]) Valid() bool {
+	if !it.valid {
+		return false
+	}
+	if it.inner == nil || !it.inner.IsValid() {
+		return false
+	}
+	// Check if current key is within range
+	if it.end != nil && bytes.Compare(it.inner.Key(), it.end) >= 0 {
+		return false
+	}
+	return true
+}
+
+func (it *Iterator[I]) Key() []byte {
+	if !it.Valid() {
+		return nil
+	}
+	return it.inner.Key()
+}
+
+func (it *Iterator[I]) Value() []byte {
+	if !it.Valid() {
+		return nil
+	}
+	return it.inner.Value()
+}
+
+func (it *Iterator[I]) Next() error {
+	if !it.Valid() {
+		return nil
+	}
+	return it.inner.Next()
+}
+
+func (it *Iterator[I]) Close() error {
+	it.valid = false
+	it.inner = nil
+	return nil
+}
 
 type MemTableIterator interface {
 	iterators.StorageIterator

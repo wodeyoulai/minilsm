@@ -29,7 +29,7 @@ func TestBlockIterator_SeekToFirst(t *testing.T) {
 	block := createTestBlock(t, entries)
 
 	// 创建迭代器并定位到第一个元素
-	iter := CreateAndSeekToFirst(block)
+	iter, _ := CreateAndSeekToFirst(block)
 
 	// 验证第一个元素
 	assert.Equal(t, []byte("key1"), iter.Key())
@@ -41,7 +41,7 @@ func TestBlockIterator_Empty(t *testing.T) {
 	block := NewBlockBuilder(1024).Build()
 
 	// 验证空block的迭代器
-	iter := CreateAndSeekToFirst(block)
+	iter, _ := CreateAndSeekToFirst(block)
 	assert.False(t, iter.IsValid()) // 空block应该返回无效迭代器
 }
 
@@ -56,7 +56,7 @@ func TestBlockIterator_Next(t *testing.T) {
 	}
 
 	block := createTestBlock(t, entries)
-	iter := CreateAndSeekToFirst(block)
+	iter, _ := CreateAndSeekToFirst(block)
 
 	// 验证遍历所有元素
 	for i := 0; i < len(entries); i++ {
@@ -96,7 +96,7 @@ func TestBlockIterator_SeekToKey(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.seekKey, func(t *testing.T) {
-			iter := CreateAndSeekToKey(block, []byte(tc.seekKey))
+			iter, _ := CreateAndSeekToKey(block, []byte(tc.seekKey))
 			assert.Equal(t, tc.shouldBeValid, iter.IsValid())
 		})
 	}
@@ -114,7 +114,7 @@ func TestBlockIterator_SingleEntry(t *testing.T) {
 	block := createTestBlock(t, entries)
 
 	// 测试SeekToFirst
-	iter := CreateAndSeekToFirst(block)
+	iter, _ := CreateAndSeekToFirst(block)
 	assert.True(t, iter.IsValid())
 	assert.Equal(t, []byte("single_key"), iter.Key())
 	assert.Equal(t, []byte("single_value"), iter.Value())
@@ -141,7 +141,7 @@ func TestBlockIterator_LargeEntries(t *testing.T) {
 	}
 
 	block := createTestBlock(t, entries)
-	iter := CreateAndSeekToFirst(block)
+	iter, _ := CreateAndSeekToFirst(block)
 
 	assert.True(t, iter.IsValid())
 	assert.Equal(t, largeKey, iter.Key())
@@ -162,7 +162,7 @@ func TestBlockIterator_SequentialAccess(t *testing.T) {
 	}
 
 	block := createTestBlock(t, entries)
-	iter := CreateAndSeekToFirst(block)
+	iter, _ := CreateAndSeekToFirst(block)
 
 	// 先正向遍历
 	for i := 0; i < len(entries); i++ {
@@ -190,7 +190,7 @@ func TestBlockIterator_SeekStress(t *testing.T) {
 
 	// 对每个可能的值进行seek测试
 	for i := 0; i < 100; i += 1 {
-		iter := CreateAndSeekToKey(block, []byte{byte(i)})
+		iter, _ := CreateAndSeekToKey(block, []byte{byte(i)})
 		if i%2 == 0 && i < len(entries)*2 {
 			// 应该正好找到这个key
 			assert.Equal(t, []byte{byte(i)}, iter.Key())
