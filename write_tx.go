@@ -3,8 +3,8 @@ package mini_lsm
 import (
 	"bytes"
 	"errors"
+	"google.golang.org/protobuf/proto"
 	"mini_lsm/pb"
-	"sync"
 	"sync/atomic"
 )
 
@@ -12,14 +12,20 @@ const (
 	DeletedBitMask byte = 1 << 0 // 0000 0001
 )
 
+// Errors
+var (
+	ErrTransactionClosed = errors.New("transaction has been closed")
+	ErrConflict          = errors.New("transaction conflict detected")
+)
+
 type WriteTx interface {
-	// Commit commits a previous tx and begins a new writable one.
+	ReadTx
 	Commit() error
 	Put(key []byte, value []byte) error
-	Rollback()
+	Delete(key []byte) error
 }
+
 type WriteTxImpl struct {
-	*Tx
 	inner        *LsmStorageInner
 	readTs       uint64
 	commitTs     uint64
@@ -38,7 +44,6 @@ type WriteEntry struct {
 // NewWriteTx creates a new writeTx transaction
 func NewWriteTx(inner *LsmStorageInner, mvcc *LsmMvccInner, serializable bool) *WriteTxImpl {
 	tx := &WriteTxImpl{
-		Tx:           &Tx{readLock: sync.RWMutex{}},
 		inner:        inner,
 		readTs:       mvcc.ReadTimestamp(),
 		writes:       make(map[string]*WriteEntry),
@@ -48,11 +53,73 @@ func NewWriteTx(inner *LsmStorageInner, mvcc *LsmMvccInner, serializable bool) *
 	return tx
 }
 
+func (w *WriteTxImpl) Scan(start []byte, end []byte, limit int64) (keys [][]byte, vals [][]byte, err error) {
+	if w.closed.Load() {
+		return nil, nil, ErrTransactionClosed
+	}
+
+	// Create iterators for the scan
+	iter, err := w.inner.Scan(start, end)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	//var keys, values [][]byte
+	count := int64(0)
+
+	for iter.Valid() && (limit == 0 || count < limit) {
+		key := iter.Key()
+		if end != nil && bytes.Compare(key, end) >= 0 {
+			break
+		}
+
+		// Add to read set
+		//r.keyHashes.Store(hash(key), struct{}{})
+
+		keys = append(keys, key)
+
+		pbValue := &pb.Value{}
+		err = proto.Unmarshal(iter.Value(), pbValue)
+		if err != nil {
+			w.inner.lg.Error("unmarshal fail")
+			continue
+		}
+		vals = append(vals, pbValue.Value)
+		count++
+
+		if err := iter.Next(); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	return keys, vals, nil
+}
+
+func (w *WriteTxImpl) Get(key []byte) (keys []byte, err error) {
+	// Get retrieves a value for a key, respecting transaction isolation
+	if w.closed.Load() {
+		return nil, ErrTransactionClosed
+	}
+
+	// Convert key to pb.Key with version and timestamp
+	pbKey := &pb.Key{
+		Key:       key,
+		Timestamp: w.readTs,
+	}
+
+	// Use storage layer Get with MVCC timestamp
+	v, err := w.inner.get(pbKey)
+	if err != nil {
+		return nil, err
+	}
+	return v.Value, nil
+}
+
 func (w *WriteTxImpl) Put(key []byte, value []byte) error {
 	if w.closed.Load() {
 		return ErrTransactionClosed
 	}
-
+	//w.inner.lg.Debug("TX-%d: Putting key %s", zap.Uint64("readtx", w.readTs), zap.String("key", string(key)))
 	// Store in pending writes
 	w.writes[string(key)] = &WriteEntry{
 		key:   key,
@@ -97,16 +164,20 @@ func (w *WriteTxImpl) Commit() error {
 
 	// Prepare batch of writes with commit timestamp
 	batch := make([]*KeyValue, 0, len(w.writes))
+	//xxkey := ""
 	for _, entry := range w.writes {
 		kv := KeyValue{
 			Key: &pb.Key{
 				Key:       entry.key,
 				Timestamp: w.commitTs,
 			},
+
 			Value: &pb.Value{
 				Value: entry.value,
 			},
 		}
+		//xxkey = string(entry.key)
+		kv.Value.IsDeleted = entry.meta == DeletedBitMask
 		batch = append(batch, &kv)
 	}
 
@@ -116,7 +187,8 @@ func (w *WriteTxImpl) Commit() error {
 	}
 
 	// Update commit timestamp
-	//w.mvcc.UpdateCommitTS(w.commitTs)
+	w.mvcc.UpdateReadTimestamp()
+	//w.inner.lg.Debug("TX-%d: Commting key %s", zap.Uint64("writetx", w.commitTs), zap.String("key", xxkey))
 
 	return nil
 }
@@ -145,12 +217,6 @@ func (w *WriteTxImpl) Rollback() {
 	w.closed.Store(true)
 	w.writes = nil
 }
-
-// Errors
-var (
-	ErrTransactionClosed = errors.New("transaction has been closed")
-	ErrConflict          = errors.New("transaction conflict detected")
-)
 
 // Helper functions
 func hash(b []byte) uint32 {

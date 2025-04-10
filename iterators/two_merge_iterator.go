@@ -8,6 +8,7 @@ type TwoMergeIterator struct {
 	iterA   StorageIterator
 	iterB   StorageIterator
 	current StorageIterator // Tracks which iterator is currently active
+	valid   bool
 }
 
 func NewTwoMergeIterator(iterA, iterB StorageIterator) (*TwoMergeIterator, error) {
@@ -92,5 +93,13 @@ func (t *TwoMergeIterator) Next() error {
 
 	// Choose which iterator should be current now
 	t.chooseNextIterator()
+	return nil
+}
+
+func (t *TwoMergeIterator) Close() error {
+	t.current = nil
+	t.iterA = nil
+	t.iterB = nil
+	t.valid = false
 	return nil
 }

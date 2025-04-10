@@ -2,8 +2,8 @@ package mini_lsm
 
 import (
 	"bytes"
+	"google.golang.org/protobuf/proto"
 	"mini_lsm/pb"
-	"sync"
 	"sync/atomic"
 )
 
@@ -15,18 +15,16 @@ type ReadTx interface {
 
 // ReadTx represents a read transaction with MVCC
 type ReadTxImpl struct {
-	*Tx
-	inner     *LsmStorageInner
-	readTs    uint64   // Transaction read timestamp
-	keyHashes sync.Map // Track read keys for conflict detection
-	mvcc      *LsmMvccInner
-	closed    atomic.Bool
+	inner  *LsmStorageInner
+	readTs uint64 // Transaction read timestamp
+	//keyHashes sync.Map // Track read keys for conflict detection
+	mvcc   *LsmMvccInner
+	closed atomic.Bool
 }
 
 // NewReadTx creates a new read transaction
 func NewReadTx(inner *LsmStorageInner, mvcc *LsmMvccInner, serializable bool) *ReadTxImpl {
 	tx := &ReadTxImpl{
-		Tx:     &Tx{readLock: sync.RWMutex{}},
 		inner:  inner,
 		readTs: mvcc.ReadTimestamp(),
 		mvcc:   mvcc,
@@ -41,7 +39,7 @@ func (r *ReadTxImpl) Get(key []byte) ([]byte, error) {
 	}
 
 	// Add key to read set for conflict detection
-	r.keyHashes.Store(hash(key), struct{}{})
+	//r.keyHashes.Store(hash(key), struct{}{})
 
 	// Convert key to pb.Key with version and timestamp
 	pbKey := &pb.Key{
@@ -79,10 +77,17 @@ func (r *ReadTxImpl) Scan(start, end []byte, limit int64) ([][]byte, [][]byte, e
 		}
 
 		// Add to read set
-		r.keyHashes.Store(hash(key), struct{}{})
+		//r.keyHashes.Store(hash(key), struct{}{})
 
 		keys = append(keys, key)
-		values = append(values, iter.Value())
+
+		pbValue := &pb.Value{}
+		err = proto.Unmarshal(iter.Value(), pbValue)
+		if err != nil {
+			r.inner.lg.Error("unmarshal fail")
+			continue
+		}
+		values = append(values, pbValue.Value)
 		count++
 
 		if err := iter.Next(); err != nil {

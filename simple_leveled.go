@@ -7,7 +7,6 @@ type SimpleLeveledCompactionOptions struct {
 	SizeRatioPercent uint32
 	// L0->L1
 	Level0FileNumCompactionTrigger int
-
 	// l1->l2...
 	ThresholdFilesCount uint32
 	MaxLevels           uint32

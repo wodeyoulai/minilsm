@@ -21,12 +21,7 @@ func (f *FileObject) Read(offset uint32, length uint32) ([]byte, error) {
 	return data, nil
 }
 
-//func (f *FileObject) Size() uint32 {
-//	return f.size
-//}
-
 func CreateFileObject(path string, data []byte) (*FileObject, error) {
-
 	// 确保目录存在
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {

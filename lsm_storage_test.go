@@ -3,6 +3,7 @@ package mini_lsm
 import (
 	"bytes"
 	"fmt"
+	"github.com/prometheus/client_golang/prometheus"
 	"mini_lsm/pb"
 	"os"
 	"path/filepath"
@@ -52,7 +53,8 @@ func newTestHelper(t *testing.T) *testHelper {
 	}
 
 	// Create LSM
-	lsm, err := NewMiniLsm(logger, tempDir, opts)
+	registry := prometheus.NewRegistry()
+	lsm, err := NewMiniLsm(logger, tempDir, registry, opts)
 	require.NoError(t, err, "Failed to create MiniLsm")
 
 	// Setup cleanup function
@@ -104,6 +106,7 @@ func TestLsmStorageInnerPutGet(t *testing.T) {
 	helper := newTestHelper(t)
 	defer helper.doCleanup()
 
+	old := time.Now()
 	inner := helper.inner()
 
 	// Test data
@@ -113,18 +116,21 @@ func TestLsmStorageInnerPutGet(t *testing.T) {
 	// Put
 	err := inner.put(testKey, testValue)
 	assert.NoError(t, err, "Put should succeed")
+	fmt.Printf("one %f\n", time.Now().Sub(old).Seconds())
+	old = time.Now()
 
 	// Get
 	value, err := inner.get(&pb.Key{Key: testKey})
 	assert.NoError(t, err, "Get should succeed")
-	assert.Equal(t, testValue, value, "Retrieved value should match")
+	assert.Equal(t, testValue, value.Value, "Retrieved value should match")
 
 	// Get non-existent key
 	nonExistentKey := []byte("non_existent")
 	value, err = inner.get(&pb.Key{Key: nonExistentKey})
 	assert.Error(t, err, "Get for non-existent key should fail")
 	assert.Nil(t, value, "Value for non-existent key should be nil")
-
+	fmt.Printf("two %f\n", time.Now().Sub(old).Seconds())
+	old = time.Now()
 	// Test multiple puts and gets
 	for i := 0; i < 10; i++ {
 		key := []byte(fmt.Sprintf("key_%d", i))
@@ -136,8 +142,9 @@ func TestLsmStorageInnerPutGet(t *testing.T) {
 		// Verify immediately
 		result, err := inner.get(&pb.Key{Key: key})
 		assert.NoError(t, err, "Get should succeed")
-		assert.Equal(t, val, result, "Retrieved value should match")
+		assert.Equal(t, val, result.Value, "Retrieved value should match")
 	}
+	fmt.Printf("%f", time.Now().Sub(old).Seconds())
 }
 
 // Test memtable freeze
@@ -171,7 +178,7 @@ func TestLsmStorageInnerFreezeMemtable(t *testing.T) {
 	// Verify data is in the new memtable
 	value, err := inner.get(&pb.Key{Key: testKey})
 	assert.NoError(t, err, "Get from new memtable should succeed")
-	assert.Equal(t, testValue, value, "Retrieved value should match")
+	assert.Equal(t, testValue, value.Value, "Retrieved value should match")
 }
 
 // Test scan operation
@@ -335,7 +342,10 @@ func TestLsmStorageInnerRecovery(t *testing.T) {
 
 	// Create new storage at same path
 	logger, _ := zap.NewDevelopment()
-	newLsm, err := NewMiniLsm(logger, tempDir, *inner.options)
+
+	registry := prometheus.NewRegistry()
+	newLsm, err := NewMiniLsm(logger, tempDir, registry, *inner.options)
+
 	require.NoError(t, err, "Creating new LSM should succeed")
 
 	// Check that recovery worked
@@ -347,10 +357,10 @@ func TestLsmStorageInnerRecovery(t *testing.T) {
 		expectedValue := []byte(fmt.Sprintf("value_%03d", i))
 
 		value, err := newLsm.Get(key)
-		v := pb.Value{}
-		proto.Unmarshal(value, &v)
+		//v := pb.Value{}
+		//proto.Unmarshal(value, &v)
 		assert.NoError(t, err, "Get after recovery should succeed")
-		assert.Equal(t, expectedValue, v.Value, "Value after recovery should match")
+		assert.Equal(t, expectedValue, value, "Value after recovery should match")
 	}
 
 	// Clean up

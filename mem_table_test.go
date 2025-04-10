@@ -41,7 +41,7 @@ func TestNewMTable(t *testing.T) {
 	walPath := createTempWALPath(t)
 
 	// Create a new MTable
-	mtable := NewMTable(logger, 1, walPath)
+	mtable := NewMTable(logger, 1, walPath, true)
 
 	// Verify properties
 	if mtable.id != 1 {
@@ -64,7 +64,7 @@ func TestNewMTable(t *testing.T) {
 func TestMTablePutAndGet(t *testing.T) {
 	logger := setupLogger(t)
 	walPath := createTempWALPath(t)
-	mtable := NewMTable(logger, 1, walPath)
+	mtable := NewMTable(logger, 1, walPath, true)
 
 	// Prepare test data
 	key := &pb.Key{
@@ -103,7 +103,7 @@ func TestMTablePutAndGet(t *testing.T) {
 func TestMTableGetNonExistent(t *testing.T) {
 	logger := setupLogger(t)
 	walPath := createTempWALPath(t)
-	mtable := NewMTable(logger, 1, walPath)
+	mtable := NewMTable(logger, 1, walPath, true)
 
 	// Try to get a non-existent key
 	key := &pb.Key{
@@ -126,7 +126,7 @@ func TestMTableGetNonExistent(t *testing.T) {
 func TestMTablePutBatch(t *testing.T) {
 	logger := setupLogger(t)
 	walPath := createTempWALPath(t)
-	mtable := NewMTable(logger, 1, walPath)
+	mtable := NewMTable(logger, 1, walPath, true)
 
 	// Prepare a batch of 3 key-value pairs
 	var batch []*KeyValue
@@ -178,7 +178,7 @@ func TestMTablePutBatch(t *testing.T) {
 func TestMTableScanAndIterator(t *testing.T) {
 	logger := setupLogger(t)
 	walPath := createTempWALPath(t)
-	mtable := NewMTable(logger, 1, walPath)
+	mtable := NewMTable(logger, 1, walPath, true)
 
 	// Insert some ordered data
 	keys := []string{"a", "b", "c", "d", "e"}
@@ -261,7 +261,7 @@ func TestMTableScanAndIterator(t *testing.T) {
 func TestMTableFlush(t *testing.T) {
 	logger := setupLogger(t)
 	walPath := createTempWALPath(t)
-	mtable := NewMTable(logger, 1, walPath)
+	mtable := NewMTable(logger, 1, walPath, true)
 
 	// Insert some data
 	for i := 1; i <= 5; i++ {
@@ -299,7 +299,7 @@ func TestMTableFlush(t *testing.T) {
 func TestMTableVersioning(t *testing.T) {
 	logger := setupLogger(t)
 	walPath := createTempWALPath(t)
-	mtable := NewMTable(logger, 1, walPath)
+	mtable := NewMTable(logger, 1, walPath, true)
 
 	keyBytes := []byte("versioned-key")
 
@@ -359,7 +359,7 @@ func TestMTableVersioning(t *testing.T) {
 func TestMTableEmptyKeyValue(t *testing.T) {
 	logger := setupLogger(t)
 	walPath := createTempWALPath(t)
-	mtable := NewMTable(logger, 1, walPath)
+	mtable := NewMTable(logger, 1, walPath, true)
 
 	// Test with empty key content (not nil key)
 	emptyKeyContent := &pb.Key{
@@ -422,7 +422,7 @@ func TestMTableEmptyKeyValue(t *testing.T) {
 func TestMTableConcurrency(t *testing.T) {
 	logger := setupLogger(t)
 	walPath := createTempWALPath(t)
-	mtable := NewMTable(logger, 1, walPath)
+	mtable := NewMTable(logger, 1, walPath, true)
 
 	// Number of concurrent operations
 	const numOps = 100
@@ -473,7 +473,7 @@ func TestMTableRecoveryFromWAL(t *testing.T) {
 	walPath := createTempWALPath(t)
 
 	// Create a table and add some data
-	originalTable := NewMTable(logger, 42, walPath)
+	originalTable := NewMTable(logger, 42, walPath, true)
 
 	// Insert data
 	key := &pb.Key{
@@ -498,7 +498,7 @@ func TestMTableRecoveryFromWAL(t *testing.T) {
 	}
 
 	// Create a new table that should recover from WAL
-	recoveredTable, err := NewMTableWithWAL(logger, 42, walPath)
+	recoveredTable, err := NewMTableWithWAL(logger, 42, walPath, true)
 	if err != nil {
 		t.Fatalf("Recovery failed: %v", err)
 	}
@@ -524,7 +524,7 @@ func BenchmarkMTablePut(b *testing.B) {
 	defer os.RemoveAll(tempDir)
 
 	walPath := filepath.Join(tempDir, "bench.wal")
-	mtable := NewMTable(logger, 1, walPath)
+	mtable := NewMTable(logger, 1, walPath, true)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -553,7 +553,7 @@ func BenchmarkMTableGet(b *testing.B) {
 	defer os.RemoveAll(tempDir)
 
 	walPath := filepath.Join(tempDir, "bench.wal")
-	mtable := NewMTable(logger, 1, walPath)
+	mtable := NewMTable(logger, 1, walPath, true)
 
 	// Pre-populate table
 	const numEntries = 10000

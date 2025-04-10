@@ -9,6 +9,24 @@ const (
 	TaskTypeForceFullCompaction
 )
 
+// CompactionTask represents different types of compaction tasks
+type CompactionTask interface {
+	TaskType() TaskType
+	CompactToBottomLevel() bool
+	UpperSstables() []uint32
+	LowerSstables() []uint32
+	OutputSstables() []uint32
+	UpperLevel() uint32
+	SetOutputSstables([]uint32)
+}
+
+// CompactionController interface defines the common behavior for all compaction strategies
+type CompactionController interface {
+	GenerateCompactionTask(snapshot *LsmStorageState) (CompactionTask, error)
+	ApplyCompactionResult(snapshot *LsmStorageState, task CompactionTask, inRecovery bool) error
+	FlushToL0() bool
+}
+
 func (c TaskType) String() string {
 	switch c {
 	case TaskTypeLeveled:
@@ -42,24 +60,6 @@ type CompactionOptions struct {
 	TieredOpts    *TieredCompactionOptions
 	SimpleOpts    *SimpleLeveledCompactionOptions
 	ForceFullOpts *ForceFullCompactionOptions
-}
-
-// CompactionTask represents different types of compaction tasks
-type CompactionTask interface {
-	TaskType() TaskType
-	CompactToBottomLevel() bool
-	UpperSstables() []uint32
-	LowerSstables() []uint32
-	OutputSstables() []uint32
-	UpperLevel() uint32
-	SetOutputSstables([]uint32)
-}
-
-// CompactionController interface defines the common behavior for all compaction strategies
-type CompactionController interface {
-	GenerateCompactionTask(snapshot *LsmStorageState) (CompactionTask, error)
-	ApplyCompactionResult(snapshot *LsmStorageState, task CompactionTask, inRecovery bool) error
-	FlushToL0() bool
 }
 
 type ForceFullCompactionController struct {

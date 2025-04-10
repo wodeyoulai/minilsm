@@ -23,21 +23,41 @@ import (
 	"go.uber.org/zap"
 )
 
-// WriteBatchRecord indicates an operation in a writeTx batch
-type WriteBatchRecord struct {
-	Key   []byte
-	Value []byte
-	Type  WriteBatchType // PUT or DELETE
+var ErrKeyDeleted = errors.New("key is deleted")
+
+// LsmStorageOptions storage engine configuration options
+type LsmStorageOptions struct {
+	BlockSize      uint32
+	TargetSSTSize  uint32
+	MemTableLimit  uint32
+	CompactionOpts CompactionOptions
+	EnableWAL      bool
+	Serializable   bool
+	Levels         uint32
+	MustSyncWal    bool
 }
 
-type WriteBatchType int
+// LsmStorageInner internal implementation of storage engine
+type LsmStorageInner struct {
+	lg                    *zap.Logger
+	state                 *LsmStorageState
+	stateLock, nextIDLock sync.Mutex
+	path                  string
+	//include memtable id
 
-const (
-	WriteBatchPut WriteBatchType = iota
-	WriteBatchDelete
-)
+	nextSSTableID                       atomic.Uint32
+	options                             *LsmStorageOptions
+	compactionCtrl                      CompactionController
+	stopping, forceFullCompactionNotify chan struct{}
 
-var ErrKeyDeleted = errors.New("key is deleted")
+	// record sstable id -> iterator
+	openedIterators map[uint32]iterators.StorageIterator
+	openedSstables  map[uint32]*table.SSTable
+
+	manifest *Manifest
+	//timestamp atomic.Uint64
+	//compactionFilter []CompactionFilter
+}
 
 // LsmStorageState indicates the status of the storage engine
 type LsmStorageState struct {
@@ -66,20 +86,24 @@ func (l *LsmStorageState) clearLastImmTable() {
 	}
 }
 
+func (l *LsmStorageState) getMaxTimestamp() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.memTable != nil && !l.memTable.Empty() {
+		return l.memTable.Ts()
+	}
+	for i := range l.immMemTables {
+		if !l.memTable.Empty() {
+			return l.immMemTables[i].Ts()
+		}
+	}
+	return 0
+
+}
+
 type LevelMeta struct {
 	level    uint32
 	ssTables []uint32 // the sstable file id of this layer
-}
-
-// LsmStorageOptions storage engine configuration options
-type LsmStorageOptions struct {
-	BlockSize      uint32
-	TargetSSTSize  uint32
-	MemTableLimit  uint32
-	CompactionOpts CompactionOptions
-	EnableWAL      bool
-	Serializable   bool
-	Levels         uint32
 }
 
 type CompactionStrategy int
@@ -90,31 +114,6 @@ const (
 	TieredCompaction
 	SimpleLeveledCompaction
 )
-
-// LsmStorageInner internal implementation of storage engine
-type LsmStorageInner struct {
-	readTx  ReadTx
-	writeTx WriteTx
-
-	lg                    *zap.Logger
-	state                 *LsmStorageState
-	stateLock, nextIDLock sync.Mutex
-	path                  string
-	//include memtable id
-
-	nextSSTableID                       atomic.Uint32
-	options                             *LsmStorageOptions
-	compactionCtrl                      CompactionController
-	stopping, forceFullCompactionNotify chan struct{}
-
-	// record sstable id -> iterator
-	openedIterators map[uint32]iterators.StorageIterator
-	openedSstables  map[uint32]*table.SSTable
-
-	manifest *Manifest
-	//timestamp atomic.Uint64
-	//compactionFilter []CompactionFilter
-}
 
 // newLsmStorageInner creates a new internal LSM storage engine instance
 func newLsmStorageInner(logger *zap.Logger, path string, opts *LsmStorageOptions) (*LsmStorageInner, error) {
@@ -143,7 +142,7 @@ func newLsmStorageInner(logger *zap.Logger, path string, opts *LsmStorageOptions
 			memTable:     nil, // Will be created during recovery or initialization
 			immMemTables: make([]MemTable, 0),
 			l0SSTables:   make([]uint32, 0),
-			levels:       make([]LevelMeta, opts.Levels),
+			levels:       defaultLevels(opts),
 		},
 		stateLock:  sync.Mutex{},
 		nextIDLock: sync.Mutex{},
@@ -181,15 +180,70 @@ func newLsmStorageInner(logger *zap.Logger, path string, opts *LsmStorageOptions
 		return nil, fmt.Errorf("failed to recover from manifest: %w", err)
 	}
 
-	// Create MVCC instance
-	mvcc := NewLsmMvccInner(uint64(time.Now().UnixNano()), nil)
+	// Recover memtable state from wal
 
-	// Initialize transactions
-	inner.readTx = NewReadTx(inner, mvcc, opts.Serializable)
-	inner.writeTx = NewWriteTx(inner, mvcc, opts.Serializable)
-
+	err := inner.recoverMemtableFromWal()
+	if err != nil {
+		return nil, err
+	}
+	//inner.recoverTimeStamp()
 	return inner, nil
 }
+
+func defaultLevels(opts *LsmStorageOptions) []LevelMeta {
+	t := make([]LevelMeta, opts.Levels)
+	for i := range t {
+		t[i] = LevelMeta{ssTables: make([]uint32, 0)}
+	}
+	return t
+}
+
+// find max ts from memtable->immemtable->sstable
+func (l *LsmStorageInner) recoverTimeStamp() uint64 {
+	if l.state == nil {
+		return 0
+	}
+	ts := l.state.getMaxTimestamp()
+	if ts != 0 {
+		return ts
+	}
+
+	newestSstable := uint32(0)
+	find := false
+	if len(l.state.l0SSTables) != 0 {
+		newestSstable = l.state.l0SSTables[0]
+		find = true
+	} else {
+		for _, level := range l.state.levels {
+			if len(level.ssTables) == 0 {
+				continue
+			}
+			find = true
+			newestSstable = findMax(level.ssTables)
+		}
+	}
+	if !find {
+		return 0
+	}
+	f, err := fileutil.OpenFileObject(l.sstPath(newestSstable))
+	if err != nil {
+		l.lg.Fatal("manifest file broken")
+	}
+	sst, err := table.OpenSSTable(newestSstable, nil, f)
+	if err != nil {
+		l.lg.Fatal("manifest file broken")
+	}
+	defer sst.Close()
+	return sst.MaxTimestamp()
+}
+func findMax(arr []uint32) uint32 {
+	r := uint32(0)
+	for i := range arr {
+		r = max(r, arr[i])
+	}
+	return r
+}
+
 func (l *LsmStorageInner) Scan(start, end []byte) (*Iterator[iterators.StorageIterator], error) {
 	if len(start) > 0 && len(end) > 0 && bytes.Compare(start, end) >= 0 {
 		return nil, errors.New("invalid range: start key must be less than end key")
@@ -316,11 +370,11 @@ func (l *LsmStorageInner) recoverFromManifest() error {
 		switch record.Type {
 		case "memtable":
 			// record the largest memtable id
-			l.updateNextTableID(record.MemtableID)
+			l.updateNextTableID(record.MemtableID + 1)
 
 		case "flush":
 			// add the corresponding sst to l0
-			err = l.addL0SSTable(record.FlushID)
+			err = l.addL0SSTable(record.MemtableID)
 
 		case "compaction":
 			// update the hierarchy of the lsm tree
@@ -330,18 +384,47 @@ func (l *LsmStorageInner) recoverFromManifest() error {
 		}
 	}
 	l.manifest = manifest
+	return nil
 	// 3. create a new memtable for writing
-	return l.createNewMemtable()
+	//return l.createNewMemtable()
 }
 
 func (l *LsmStorageInner) createNewMemtable() error {
 	id := l.nextSSTableID.Load()
-	l.state.memTable = NewMTable(l.lg, id, l.walPath(l.nextSSTableID.Load()))
+	l.state.memTable = NewMTable(l.lg, id, l.walPath(id), l.options.MustSyncWal)
 	l.nextSSTableID.Add(1)
 	// log events that create a new memtable to manifest
 	record := NewMemtableRecord(id)
 	if err := l.manifest.AddRecord(record); err != nil {
 		return err
+	}
+	return nil
+}
+
+// the data in memtable and did not persistant
+func (l *LsmStorageInner) recoverMemtableFromWal() error {
+	for {
+		id := l.nextSSTableID.Load()
+		walFilePath := l.walPath(id)
+		_, err := os.Stat(walFilePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				if l.state.memTable != nil {
+					l.state.immMemTables = append([]MemTable{l.state.memTable}, l.state.immMemTables...)
+				}
+				return l.createNewMemtable()
+			}
+		}
+
+		// if table wal exists
+		newTable := NewMTable(l.lg, id, walFilePath, l.options.MustSyncWal)
+		if newTable == nil {
+			l.lg.Fatal("Failed to create new memtable")
+		}
+		newTable.readFromWal()
+		l.state.immMemTables = append([]MemTable{newTable}, l.state.immMemTables...)
+
+		l.nextSSTableID.Add(1)
 	}
 	return nil
 }
@@ -406,10 +489,8 @@ func (l *LsmStorageInner) put(key, value []byte) error {
 
 // memTable reaches the threshold, lock and create a new one
 func (l *LsmStorageInner) freezeMemTable() error {
-	//l.state.mu.Lock()
-	//defer l.state.mu.Unlock()
 	id := l.nextSSTableID.Load()
-	newMemTable := NewMTable(l.state.lg, l.nextIdAndCrease(), l.path)
+	newMemTable := NewMTable(l.state.lg, l.nextIdAndCrease(), l.path, l.options.MustSyncWal)
 
 	newImtables := make([]MemTable, len(l.state.immMemTables)+1)
 	if len(l.state.immMemTables) > 0 {
@@ -419,7 +500,7 @@ func (l *LsmStorageInner) freezeMemTable() error {
 	l.state.immMemTables[0] = l.state.memTable
 	l.state.memTable = newMemTable
 
-	r := NewFreezeMemtableRecord(id)
+	r := NewFreezeMemtableRecord(id - 1)
 	if err := l.manifest.AddRecord(r); err != nil {
 		return err
 	}
@@ -472,13 +553,6 @@ func (l *LsmStorageInner) get(key *pb.Key) (*pb.Value, error) {
 	// Convert key to internal format for comparison
 	encodedKey := keyMarshal(key)
 
-	// 1. Check memtable
-	//e := SklElement{
-	//	Key:       key.Key,
-	//	Version:   key.Version,
-	//	Timestamp: key.Timestamp,
-	//	Value:     nil,
-	//}
 	if value, ok := l.state.memTable.Get(key); ok {
 		if !value.IsDeleted {
 			return value, nil
@@ -510,8 +584,11 @@ func (l *LsmStorageInner) get(key *pb.Key) (*pb.Value, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to create iterator for L0 SSTable %d: %w", sstID, err)
 			}
-
-			if iter.IsValid() && bytes.Equal(iter.Key(), encodedKey) {
+			if !iter.IsValid() {
+				return nil, fmt.Errorf("invalid L0 SSTable %d: %w", sstID, err)
+			}
+			sklele := unmarshalSklElement(iter.Key())
+			if bytes.Equal(sklele.Key, key.Key) && sklele.Timestamp <= key.Timestamp {
 				v := pb.Value{}
 				proto.Unmarshal(iter.Value(), &v)
 				return &v, nil
@@ -785,7 +862,8 @@ func (l *LsmStorageInner) StartCompactionWorker(ctx context.Context) error {
 	for {
 		select {
 		case <-l.stopping:
-			l.lg.Error("LsmStorageInner is stopping")
+			l.lg.Info("LsmStorageInner is stopping")
+			return errors.New("LsmStorageInner is stopping")
 		case <-l.forceFullCompactionNotify:
 			if err := l.triggerCompaction(); err != nil {
 			}
@@ -860,3 +938,46 @@ func (l *LsmStorageState) addToL0(id uint32) {
 	defer l.mu.Unlock()
 	l.l0SSTables = append(l.l0SSTables, id)
 }
+
+// Close closes the inner storage engine and releases all resources.
+func (l *LsmStorageInner) Close() error {
+	l.stateLock.Lock()
+	defer l.stateLock.Unlock()
+
+	// Signal background workers to stop
+	close(l.stopping)
+
+	// Close WAL for active memtable
+	if m, ok := l.state.memTable.(*MTable); ok && m.wal != nil {
+		if err := m.wal.Close(); err != nil {
+			l.lg.Error("failed to close active memtable WAL", zap.Error(err))
+		}
+	}
+
+	// Close WALs for immutable memtables
+	for i, imm := range l.state.immMemTables {
+		if m, ok := imm.(*MTable); ok && m.wal != nil {
+			if err := m.wal.Close(); err != nil {
+				l.lg.Error("failed to close immutable memtable WAL",
+					zap.Int("index", i), zap.Error(err))
+			}
+		}
+	}
+
+	l.lg.Info("inner storage engine closed")
+	return nil
+}
+
+// WriteBatchRecord indicates an operation in a writeTx batch
+type WriteBatchRecord struct {
+	Key   []byte
+	Value []byte
+	Type  WriteBatchType // PUT or DELETE
+}
+
+type WriteBatchType int
+
+const (
+	WriteBatchPut WriteBatchType = iota
+	WriteBatchDelete
+)

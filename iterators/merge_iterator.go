@@ -59,6 +59,7 @@ type MergeIterator[I StorageIterator] struct {
 	current  *HeapWrapper[I]
 	curKey   []byte
 	curValue []byte
+	valid    bool
 }
 
 func NewMergeIterator[I StorageIterator](iters []I) *MergeIterator[I] {
@@ -100,7 +101,12 @@ func (m *MergeIterator[I]) IsValid() bool {
 	}
 	return m.current.iter.IsValid()
 }
-
+func (m *MergeIterator[I]) Close() error {
+	m.valid = false
+	m.iters = nil
+	m.current = nil
+	return nil
+}
 func (m *MergeIterator[I]) nextIterator() {
 	// If the heap is empty, there really isn't any more data
 	if m.iters.Len() == 0 {

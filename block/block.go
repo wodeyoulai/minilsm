@@ -20,16 +20,16 @@ import (
 
 // Constants for block structure
 const (
-	// Size of each offset entry (uint16)
+	// OFFSET_ENTRY_SIZE Size of each offset entry (uint16)
 	OFFSET_ENTRY_SIZE = 2
 
-	// Size of element count field (uint16)
+	// NUM_ELEMENTS_SIZE Size of element count field (uint16)
 	NUM_ELEMENTS_SIZE = 2
 
-	// Minimum valid block size
+	// MIN_BLOCK_SIZE Minimum valid block size
 	MIN_BLOCK_SIZE = 4
 
-	// Maximum key/value size (limited by uint16 size field)
+	// MAX_KEY_VALUE_SIZE Maximum key/value size (limited by uint16 size field)
 	MAX_KEY_VALUE_SIZE = 65535
 )
 
@@ -41,6 +41,7 @@ var (
 )
 
 // Block represents a data block containing sorted key-value pairs
+// not Concurrency safe
 type Block struct {
 	Data    []byte   // Raw key-value data
 	Offsets []uint16 // Offsets to the start of each entry

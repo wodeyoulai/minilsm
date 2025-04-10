@@ -97,7 +97,7 @@ func (b *SsTableBuilder) Add(key, value []byte) error {
 
 	// Extract timestamp from key if present (assumed to be last 8 bytes)
 	if len(key) >= 8 {
-		ts := binary.BigEndian.Uint64(key[len(key)-8:])
+		ts := ^binary.BigEndian.Uint64(key[len(key)-8:])
 		if ts > b.maxTs {
 			b.maxTs = ts
 		}

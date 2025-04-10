@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/huandu/skiplist"
-	pWal "github.com/tidwall/wal"
 	"go.uber.org/zap"
 	"reflect"
 	"testing"
@@ -14,7 +13,7 @@ func TestNewWal(t *testing.T) {
 	type args struct {
 		logger  *zap.Logger
 		path    string
-		options *pWal.Options
+		options WalOptions
 	}
 	tests := []struct {
 		name string
@@ -25,7 +24,7 @@ func TestNewWal(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := NewWal(tt.args.logger, tt.args.path, tt.args.options); !reflect.DeepEqual(got, tt.want) {
+			if got := NewWal(tt.args.logger, tt.args.path, DefaultWalOptions()); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("NewWal() = %v, want %v", got, tt.want)
 			}
 		})
@@ -34,7 +33,7 @@ func TestNewWal(t *testing.T) {
 
 func TestWalWrite(t *testing.T) {
 	l := zap.Logger{}
-	w := NewWal(&l, "tmp1", nil)
+	w := NewWal(&l, "tmp1", DefaultWalOptions())
 
 	w.Write(1, []byte("xxx"))
 	w.Write(2, []byte("yyy"))

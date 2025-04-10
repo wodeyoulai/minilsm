@@ -138,7 +138,7 @@ func (l *LRUCache) toHead(n *linkNode) {
 	if n.next != nil {
 		n.next.pre = n.pre
 	}
-	// 将节点移到头部
+	// move the node to the head
 	n.next = l.head
 	n.pre = nil
 	l.head.pre = n

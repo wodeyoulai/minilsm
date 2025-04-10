@@ -55,10 +55,14 @@ func NewLsmMvccInner(initialTS uint64, opts *MVCCOptions) *LsmMvccInner {
 	ts := atomic.Uint64{}
 	ts.Store(initialTS)
 
+	writeTs := atomic.Uint64{}
+	writeTs.Store(initialTS)
+
 	mvcc := &LsmMvccInner{
 		ts: &TimestampState{
-			timestamp: &ts,
-			watermark: NewWatermark(),
+			timestamp:      &ts,
+			writeTimeStamp: &writeTs,
+			watermark:      NewWatermark(),
 		},
 		committedTxns: &sync.Map{},
 		opts:          opts,
@@ -82,8 +86,14 @@ func (l *LsmMvccInner) CommitTimestamp() uint64 {
 	l.commitLock.Lock()
 	defer l.commitLock.Unlock()
 
-	commitTs := l.ts.timestamp.Add(1)
+	commitTs := l.ts.writeTimeStamp.Add(1)
 	return commitTs
+}
+
+func (l *LsmMvccInner) UpdateReadTimestamp() {
+	// You may want to consider the minimum read timestamp of an active transaction
+	// This is usually done when there are no active transactions or on a regular basis
+	l.ts.timestamp.Store(l.ts.writeTimeStamp.Load())
 }
 
 // IsCommitted checks if a transaction is committed
@@ -200,9 +210,10 @@ func (w *Watermark) Update(ts uint64) {
 
 // TimestampState manages the timestamp allocation
 type TimestampState struct {
-	mu        sync.Mutex
-	timestamp *atomic.Uint64
-	watermark *Watermark
+	mu             sync.Mutex
+	timestamp      *atomic.Uint64
+	writeTimeStamp *atomic.Uint64
+	watermark      *Watermark
 }
 
 // Transaction related types
@@ -229,215 +240,3 @@ func NewCommittedTxnData(readTs uint64, commitTs uint64) *CommittedTxnData {
 		CommitTS:  commitTs,
 	}
 }
-
-//// CommittedTxnData stores data for committed transactions
-//type CommittedTxnData struct {
-//	KeyHashes map[uint32]struct{}
-//	ReadTS    uint64
-//	CommitTS  uint64
-//}
-//
-//// LsmMvccInner implements the internal MVCC mechanism
-//type LsmMvccInner struct {
-//	writeLock     sync.Mutex
-//	commitLock    sync.Mutex
-//	ts            *TimestampState
-//	committedTxns *sync.Map      // Use sync.Map for concurrent access
-//	txnTs         *atomic.Uint64 // 用于生成递增的事务时间戳
-//}
-//
-//// TimestampState encapsulates timestamp and watermark state
-//type TimestampState struct {
-//	mu        sync.Mutex
-//	timestamp *atomic.Uint64
-//	watermark *Watermark
-//}
-//
-//// NewLsmMvccInner creates a new MVCC instance
-//func NewLsmMvccInner(initialTS uint64) *LsmMvccInner {
-//	a := atomic.Uint64{}
-//	a.Store(initialTS)
-//	return &LsmMvccInner{
-//		ts: &TimestampState{
-//			timestamp: &a,
-//			watermark: NewWatermark(),
-//		},
-//		committedTxns: &sync.Map{},
-//	}
-//}
-//
-//// LatestCommitTS returns the latest commit timestamp
-//func (l *LsmMvccInner) LatestCommitTS() uint64 {
-//	return l.ts.timestamp.Load()
-//}
-//
-//// UpdateCommitTS updates the commit timestamp
-//func (l *LsmMvccInner) UpdateCommitTS(ts uint64) {
-//	l.ts.timestamp.Store(ts)
-//}
-//func (l *LsmMvccInner) IncreaseCommitTS() {
-//	l.ts.timestamp.Add(1)
-//}
-//
-//// Watermark returns the current watermark
-//// All versions strictly below this timestamp can be garbage collected
-//func (l *LsmMvccInner) Watermark() uint64 {
-//	return 0
-//	//l.ts.mu.Lock()
-//	//defer l.ts.mu.Unlock()
-//	//
-//	//if w := l.ts.watermark.Watermark(); w != nil {
-//	//	return *w
-//	//}
-//	//return l.ts.timestamp
-//}
-//
-//// NewTxn creates a new transaction
-//func (l *LsmMvccInner) NewReadTxn(inner *LsmStorageInner, serializable bool) ReadTx {
-//	// TODO: implement transaction creation logic
-//	panic("not implemented")
-//}
-//func (l *LsmMvccInner) NewWriteTxn(inner *LsmStorageInner, serializable bool) WriteTx {
-//	// TODO: implement transaction creation logic
-//	panic("not implemented")
-//}
-//
-//// Watermark represents the watermark mechanism
-//type Watermark struct {
-//	// TODO: implement watermark fields
-//}
-//
-//// NewWatermark creates a new watermark instance
-//func NewWatermark() *Watermark {
-//	return &Watermark{
-//		// TODO: initialize watermark
-//	}
-//}
-//
-//// Watermark returns the current watermark value
-//func (w *Watermark) Watermark() *uint64 {
-//	// TODO: implement watermark retrieval logic
-//	return nil
-//}
-//
-//package mini_lsm
-//
-//import (
-//	"sync"
-//	"sync/atomic"
-//)
-//
-//// CommittedTxnData stores data for committed transactions
-//type CommittedTxnData struct {
-//	KeyHashes map[uint32]struct{}
-//	ReadTS    uint64
-//	CommitTS  uint64
-//}
-//
-//// LsmMvccInner implements the internal MVCC mechanism
-//type LsmMvccInner struct {
-//	writeLock     sync.Mutex
-//	commitLock    sync.Mutex
-//	ts            *TimestampState
-//	committedTxns *sync.Map      // Use sync.Map for concurrent access
-//	txnTs         *atomic.Uint64 // 用于生成递增的事务时间戳
-//}
-//
-//// Tx represents a transaction
-//type Tx struct {
-//	readLock sync.RWMutex
-//}
-//
-//// RLock acquires a read lock
-//func (t *Tx) RLock() {
-//	t.readLock.RLock()
-//}
-//
-//// RUnlock releases a read lock
-//func (t *Tx) RUnlock() {
-//	t.readLock.RUnlock()
-//}
-//
-//// TimestampState encapsulates timestamp and watermark state
-//type TimestampState struct {
-//	mu        sync.Mutex
-//	timestamp *atomic.Uint64
-//	watermark *Watermark
-//}
-//
-//// NewLsmMvccInner creates a new MVCC instance
-//func NewLsmMvccInner(initialTS uint64) *LsmMvccInner {
-//	a := atomic.Uint64{}
-//	a.Store(initialTS)
-//	return &LsmMvccInner{
-//		ts: &TimestampState{
-//			timestamp: &a,
-//			watermark: NewWatermark(),
-//		},
-//		committedTxns: &sync.Map{},
-//	}
-//}
-//
-//// LatestCommitTS returns the latest commit timestamp
-//func (l *LsmMvccInner) LatestCommitTS() uint64 {
-//	return l.ts.timestamp.Load()
-//}
-//
-//// UpdateCommitTS updates the commit timestamp
-//func (l *LsmMvccInner) UpdateCommitTS(ts uint64) {
-//	l.ts.timestamp.Store(ts)
-//}
-//func (l *LsmMvccInner) IncreaseCommitTS() {
-//	l.ts.timestamp.Add(1)
-//}
-//
-//// Watermark returns the current watermark
-//// All versions strictly below this timestamp can be garbage collected
-//func (l *LsmMvccInner) Watermark() uint64 {
-//	return 0
-//	//l.ts.mu.Lock()
-//	//defer l.ts.mu.Unlock()
-//	//
-//	//if w := l.ts.watermark.Watermark(); w != nil {
-//	//	return *w
-//	//}
-//	//return l.ts.timestamp
-//}
-//
-//// NewTxn creates a new transaction
-//func (l *LsmMvccInner) NewReadTxn(inner *LsmStorageInner, serializable bool) ReadTx {
-//	// TODO: implement transaction creation logic
-//	panic("not implemented")
-//}
-//func (l *LsmMvccInner) NewWriteTxn(inner *LsmStorageInner, serializable bool) WriteTx {
-//	// TODO: implement transaction creation logic
-//	panic("not implemented")
-//}
-//
-//// Watermark represents the watermark mechanism
-//type Watermark struct {
-//	// TODO: implement watermark fields
-//}
-//
-//// NewWatermark creates a new watermark instance
-//func NewWatermark() *Watermark {
-//	return &Watermark{
-//		// TODO: initialize watermark
-//	}
-//}
-//
-//// Watermark returns the current watermark value
-//func (w *Watermark) Watermark() *uint64 {
-//	// TODO: implement watermark retrieval logic
-//	return nil
-//}
-//
-//
-//
-//package mini_lsm
-//
-//import (
-//"sync"
-//"sync/atomic"
-//"time"
-//)

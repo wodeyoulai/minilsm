@@ -2,7 +2,7 @@ package table
 
 import "math"
 
-// Bloom filter structure
+// BloomFilter Bloom filter structure
 type BloomFilter struct {
 	bits []byte // Bit array
 	k    uint   // Number of hash functions
@@ -10,10 +10,10 @@ type BloomFilter struct {
 }
 
 func NewBloomFilter(expectedItems int, falsePositiveRate float64) *BloomFilter {
-	// 调整公式计算适当的位数和哈希函数数量
-	// 公式优化：m = -n*ln(p)/(ln(2)²)
+	// The adjustment formula calculates the appropriate number of bits and the number of hash functions
+	// formula Optimization：m = -n*ln(p)/(ln(2)²)
 	m := uint(math.Ceil(-float64(expectedItems) * math.Log(falsePositiveRate) / (math.Log(2) * math.Log(2))))
-	// 公式优化：k = (m/n)*ln(2)
+	// formula Optimization：k = (m/n)*ln(2)
 	k := uint(math.Max(1, math.Round(float64(m)/float64(expectedItems)*math.Log(2))))
 
 	return &BloomFilter{
@@ -43,15 +43,15 @@ func (bf *BloomFilter) MayContain(key []byte) bool {
 }
 
 func (bf *BloomFilter) hash(key []byte, seed uint) uint {
-	// 使用两个不同的哈希函数增强分布性
-	h1 := uint(0x9e3779b9) // 一个质数
-	h2 := uint(0x85ebca6b) // 另一个质数
+	// Use two different hash functions to enhance distribution
+	h1 := uint(0x9e3779b9)
+	h2 := uint(0x85ebca6b)
 
 	for _, b := range key {
-		h1 = ((h1 << 5) + h1) ^ uint(b) // 类似 FNV-1a
-		h2 = ((h2<<5)+h2)*33 + uint(b)  // 混合乘法散列
+		h1 = ((h1 << 5) + h1) ^ uint(b) // similar FNV-1a
+		h2 = ((h2<<5)+h2)*33 + uint(b)  // mixed multiplicative hashing
 	}
 
-	// 使用不同的种子生成不同的哈希值
+	// use different seeds to generate different hashes
 	return h1 + seed*h2
 }

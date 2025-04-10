@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 	"log"
+	"math"
 	"mini_lsm/iterators"
 	"mini_lsm/pb"
 	"mini_lsm/table"
@@ -19,6 +20,7 @@ import (
 type MemTable interface {
 	Get(key *pb.Key) (*pb.Value, bool)
 	Put(key *pb.Key, value *pb.Value) error
+	Delete(key *pb.Key) error
 	PutBatch(entries []*KeyValue) error
 	Scan(start, end []byte) iterators.StorageIterator
 
@@ -29,6 +31,8 @@ type MemTable interface {
 	// Metadata methods
 	ID() uint32
 	ApproximateSize() uint32
+	Ts() uint64
+	Empty() bool
 	//IsEmpty() bool
 }
 
@@ -48,21 +52,24 @@ type MTable struct {
 	id, approximateSize uint32
 	wal                 *Wal
 	logger              *zap.Logger
+	maxTs               uint64
+	mustSync            bool
 }
 
 var ErrNullKey = errors.New("key or value is nil")
 
 // Create a new one MemTable
 
-func NewMTable(logger *zap.Logger, id uint32, walPath string) *MTable {
+func NewMTable(logger *zap.Logger, id uint32, walPath string, mustSync bool) *MTable {
 	list := createSkl()
-	wal := NewWal(logger, walPath, nil)
+	wal := NewWal(logger, walPath, DefaultWalOptions())
 	return &MTable{
-		mu:     sync.Mutex{},
-		id:     id,
-		skl:    list,
-		wal:    wal,
-		logger: logger,
+		mu:       sync.Mutex{},
+		id:       id,
+		skl:      list,
+		wal:      wal,
+		logger:   logger,
+		mustSync: mustSync,
 	}
 }
 
@@ -74,9 +81,9 @@ func createSkl() *skiplist.SkipList {
 			return -res
 		}
 		if k1E.Timestamp < k2E.Timestamp {
-			return 1
-		} else if k1E.Timestamp > k2E.Timestamp {
 			return -1
+		} else if k1E.Timestamp > k2E.Timestamp {
+			return 1
 		}
 		return 0
 	}))
@@ -110,24 +117,27 @@ func (m *MTable) readFromWal() {
 		if err != nil {
 			m.logger.Panic("read wal failed", zap.Uint64("index", begin), zap.Error(err))
 		}
-		key := pb.Key{}
-		_ = proto.Unmarshal(kv.Key, &key)
-		element := SklElement{
-			Key:       key.Key,
-			Version:   key.Version,
-			Timestamp: key.Timestamp,
+		pbKey := pb.Key{}
+		err = proto.Unmarshal(kv.Key, &pbKey)
+		if err != nil {
+			m.logger.Fatal("read wal failed", zap.Uint64("index", begin), zap.Error(err))
 		}
-		//for i := 0; i < len(out); i++ {
-		//	fmt.Print(out[i])
-		//}
+		//key := keyUnmarshal(kv.Key)
+
+		element := SklElement{
+			Key:       pbKey.Key,
+			Version:   pbKey.Version,
+			Timestamp: pbKey.Timestamp,
+		}
+		m.maxTs = element.Timestamp
 		m.skl.Set(element, kv.Value)
 	}
 }
 
 // Create MTable from WAL
 
-func NewMTableWithWAL(logger *zap.Logger, id uint32, path string) (*MTable, error) {
-	t := NewMTable(logger, id, path)
+func NewMTableWithWAL(logger *zap.Logger, id uint32, path string, mustSync bool) (*MTable, error) {
+	t := NewMTable(logger, id, path, mustSync)
 	t.readFromWal()
 	return t, nil
 }
@@ -137,6 +147,11 @@ func NewMTablexx(id uint64, path string) (*MTable, error) {
 	// TODO: 实现恢复逻辑
 	return nil, nil
 }
+
+func (m *MTable) Empty() bool {
+	return m.approximateSize == 0
+}
+
 func (m *MTable) Get(key *pb.Key) (*pb.Value, bool) {
 	if key == nil {
 		return nil, false
@@ -173,11 +188,16 @@ func (m *MTable) getInternal(key SklElement) ([]byte, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Look up in skiplist
-	//v := m.skl.Find(key)
-	v := m.skl.Get(key)
+	v := m.skl.Find(key)
 	if v == nil {
 		return nil, false
+	}
+	if keystr, ok := v.Key().(SklElement); !ok {
+		return nil, false
+	} else {
+		if bytes.Compare(keystr.Key, key.Key) != 0 {
+			return nil, false
+		}
 	}
 
 	// Extract value
@@ -192,30 +212,32 @@ func (m *MTable) getInternal(key SklElement) ([]byte, bool) {
 	return valueBytes, true
 }
 
-// Put 方法
-//
-//	func (m *MTable) Put(value *pb.KeyValue) error {
-//		write2wal, err := proto.Marshal(value)
-//		key := pb.Key{}
-//		proto.Unmarshal(value.Key, &key)
-//		encodeKey := keyMarshal(&key)
-//
-//		m.wal.mu.Lock()
-//		defer m.wal.mu.Unlock()
-//		last, err := m.wal.LastIndex()
-//		if err != nil {
-//			m.logger.Panic("wal died", zap.Error(err))
-//		}
-//		m.wal.Write(last+1, write2wal)
-//		m.skl.Set(encodeKey, value)
-//		return nil
-//	}
 func (m *MTable) Put(key *pb.Key, value *pb.Value) error {
 	// Marshal the key and value for storage
 	if key == nil || value == nil {
 		return ErrNullKey
 	}
 	return m.putInternal(key, value)
+
+}
+
+func (m *MTable) Delete(key *pb.Key) error {
+	// Marshal the key and value for storage
+	if key == nil {
+		return ErrNullKey
+	}
+	// Create a value with deletion marker
+	pbValue := &pb.Value{
+		Value:     nil,
+		IsDeleted: true,
+	}
+	return m.putInternal(key, pbValue)
+
+}
+
+func (m *MTable) Ts() uint64 {
+	// Marshal the key and value for storage
+	return m.maxTs
 
 }
 
@@ -232,28 +254,16 @@ func (m *MTable) putInternal(key *pb.Key, value *pb.Value) error {
 		return err
 	}
 
-	keyVal := &pb.KeyValue{Key: keyBytes, Value: valueBytes}
+	keyVal := &pb.KeyValue{Key: keyBytes, Value: valueBytes, MemTableID: uint64(m.id)}
 	write2wal, err := proto.Marshal(keyVal)
 	if err != nil {
 		return fmt.Errorf("failed to marshal KeyValue for WAL: %w", err)
 	}
 
-	//// Write to WAL first for durability
-	//m.wal.mu.Lock()
-	//defer m.wal.mu.Unlock()
-	//
-	//last, err := m.wal.LastIndex()
-	//if err != nil {
-	//	m.logger.Error("failed to get last WAL index", zap.Error(err))
-	//	return fmt.Errorf("WAL error: %w", err)
-	//}
-	//m.wal.W
-	//if err := m.wal.Write(last+1, write2wal); err != nil {
-	//	m.logger.Error("failed to writeTx to WAL", zap.Error(err))
-	//	return fmt.Errorf("WAL writeTx error: %w", err)
-	//}
 	// Async write to WAL
+	//err = m.wal.WriteSync(write2wal)
 	resultCh, err := m.wal.WriteAsync(write2wal)
+
 	if err != nil {
 		fmt.Printf("failed to write to WAL: %s", err.Error())
 		return err
@@ -264,11 +274,14 @@ func (m *MTable) putInternal(key *pb.Key, value *pb.Value) error {
 		if err := <-resultCh; err != nil {
 			// Handle WAL write failure, such as logging or adding retry logic
 			m.logger.Error("async WAL write failed", zap.Error(err))
+			//return err
 			// In extreme cases, consider removing key-value pair from memory table or triggering emergency flush
 		}
 	}()
 	element := pbKeytoSkl(key)
 
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	// Store in skiplist
 	m.skl.Set(element, valueBytes)
 
@@ -285,13 +298,59 @@ func (s *SklElement) size() uint32 {
 
 // PutBatch 方法
 func (m *MTable) PutBatch(data []*KeyValue) error {
-	for _, kv := range data {
-		err := m.putInternal(kv.Key, kv.Value)
+	batchData := pb.KeyValueBatch{Entries: make([]*pb.KeyValue, len(data))}
+	for i, ele := range data {
+		keyBytes, err := proto.Marshal(ele.Key)
 		if err != nil {
-			m.logger.Error("put failed", zap.String("key", kv.Key.String()), zap.Error(err))
+			return err
 		}
+		valueBytes, err := proto.Marshal(ele.Value)
+		if err != nil {
+			return err
+		}
+		keyVal := &pb.KeyValue{Key: keyBytes, Value: valueBytes, MemTableID: uint64(m.id)}
+		batchData.Entries[i] = keyVal
 	}
+	write2wal, err := proto.Marshal(&batchData)
+	if err != nil {
+		fmt.Printf("failed to write to WAL: %s", err.Error())
+		return err
+	}
+	// Async write to WAL
+	//err = m.wal.WriteSync(write2wal)
+	if m.mustSync {
+		err = m.wal.WriteSync(write2wal)
+		if err != nil {
+			fmt.Printf("failed to write to WAL: %s", err.Error())
+			return err
+		}
+	} else {
+		c, err := m.wal.WriteAsync(write2wal)
+		if err != nil {
+			fmt.Printf("failed to write to WAL: %s", err.Error())
+			return err
+		}
+		// Start goroutine to monitor write result (optional)
+		go func() {
+			if err := <-c; err != nil {
+				// Handle WAL write failure, such as logging or adding retry logic
+				m.logger.Error("async WAL write failed", zap.Error(err))
+				//return err
+				// In extreme cases, consider removing key-value pair from memory table or triggering emergency flush
+			}
+		}()
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, keyVal := range data {
+		element := pbKeytoSkl(keyVal.Key)
+		m.skl.Set(element, data[i].Value)
+		m.approximateSize += element.size() + uint32(len(data[i].Value.Value))
+	}
+	// This is optional but helps with determining when to flush
 	return nil
+
 }
 
 func (s *SklElement) marshal() []byte {
@@ -303,6 +362,25 @@ func (s *SklElement) marshal() []byte {
 	// ^ for compare
 	binary.BigEndian.PutUint64(out[len(s.Key)+8:], ^s.Timestamp)
 	return out
+}
+
+func unmarshalSklElement(data []byte) *SklElement {
+	length := len(data)
+	if length < 16 {
+		// 返回空元素或错误处理
+		return &SklElement{}
+	}
+
+	keyLength := length - 16
+	element := &SklElement{
+		Key:       make([]byte, keyLength),
+		Version:   binary.BigEndian.Uint64(data[keyLength : keyLength+8]),
+		Timestamp: ^binary.BigEndian.Uint64(data[keyLength+8:]), // 注意这里对时间戳取反
+		Value:     nil,
+	}
+
+	copy(element.Key, data[:keyLength])
+	return element
 }
 
 // Flush 方法
@@ -393,7 +471,7 @@ func NewMTableIterator(skl *skiplist.SkipList, start, end []byte) *MTableIterato
 		startElement := SklElement{
 			Key:       start,
 			Version:   0,
-			Timestamp: 0,
+			Timestamp: math.MaxUint64,
 		}
 		iter.current = skl.Find(startElement)
 	} else {
@@ -468,6 +546,10 @@ func (m *MTable) Scan(start, end []byte) iterators.StorageIterator {
 	defer m.mu.Unlock()
 
 	return NewMTableIterator(m.skl, start, end)
+}
+
+func (it *MTableIterator) Close() error {
+	return nil
 }
 
 // NumActiveIterators implements the StorageIterator interface

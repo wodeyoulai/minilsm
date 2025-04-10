@@ -23,10 +23,9 @@ type SSTableIterator interface {
 	iterators.StorageIterator   // Basic storage iterator interface
 	SeekToKey(key []byte) error // Seek to the first key >= the given key
 	SeekToFirst() error         // Seek to the first key
-	Close() error               // Release resources
 }
 
-// Implementation of SSTableIterator
+// SsTableIterator Implementation of SSTableIterator
 type SsTableIterator struct {
 	table     *SSTable             // The SSTable being iterated
 	blockIter *block.BlockIterator // Current block iterator

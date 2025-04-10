@@ -2,13 +2,19 @@ package mini_lsm
 
 import (
 	"context"
-	"errors"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
-	"mini_lsm/iterators"
-	"mini_lsm/pb"
 	"sync"
 	"time"
 )
+
+type Db interface {
+	Put(key, value []byte) error
+	Get(key []byte) ([]byte, error)
+	// WriteTx include read method
+	WriteTx() WriteTx
+	Close() error
+}
 
 // MiniLsm exposed storage engine interface
 type MiniLsm struct {
@@ -20,16 +26,17 @@ type MiniLsm struct {
 	wg                 *sync.WaitGroup
 	wgMu               *sync.RWMutex
 	mvcc               *LsmMvccInner
-
+	metrics            *MiniLsmMetrics
 	//compactionThread   *sync.WaitGroup
 }
 
 // NewMiniLsm create a new storage engine instance
-func NewMiniLsm(log *zap.Logger, path string, opts LsmStorageOptions) (*MiniLsm, error) {
+func NewMiniLsm(log *zap.Logger, path string, registry *prometheus.Registry, opts LsmStorageOptions) (*MiniLsm, error) {
 	inner, err := newLsmStorageInner(log, path, &opts)
 	if err != nil {
 		return nil, err
 	}
+	mvcc := NewLsmMvccInner(inner.recoverTimeStamp(), nil)
 	lsm := &MiniLsm{
 		lg:                 log,
 		inner:              inner,
@@ -39,14 +46,16 @@ func NewMiniLsm(log *zap.Logger, path string, opts LsmStorageOptions) (*MiniLsm,
 		wgMu:               &sync.RWMutex{},
 		wg:                 &sync.WaitGroup{},
 	}
+	lsm.mvcc = mvcc
+	lsm.metrics = initMetrics(registry)
 	// start the background thread
 	//lsm.GoAttach(func() { lsm.inner.StartFlushWorker() })
-	lsm.GoAttach(func() { lsm.inner.StartCompactionWorker(context.Background()) })
+	lsm.goAttach(func() { _ = lsm.inner.StartCompactionWorker(context.Background()) })
 
 	return lsm, nil
 }
 
-func (m *MiniLsm) GoAttach(f func()) {
+func (m *MiniLsm) goAttach(f func()) {
 	m.wgMu.RLock() // this blocks with ongoing close(m.stopping)
 	defer m.wgMu.RUnlock()
 	select {
@@ -64,25 +73,32 @@ func (m *MiniLsm) GoAttach(f func()) {
 }
 
 func (m *MiniLsm) Put(key, value []byte) error {
-	return m.inner.put(key, value)
+	begin := time.Now()
+	defer func() {
+		elapsed := time.Since(begin)
+		m.metrics.putLatency.Observe(float64(elapsed.Milliseconds()))
+		m.metrics.putTotal.Add(1)
+	}()
+	return m.update(func(tx WriteTx) error {
+		return tx.Put(key, value)
+	})
 }
 
-//	func (m *MiniLsm) Get(key []byte) ([]byte, error) {
-//		pbKey := pb.Key{Key: key}
-//		v, err := m.inner.get(&pbKey)
-//		if err != nil {
-//			return nil, err
-//		}
-//		return v.Value, nil
-//	}
 func (m *MiniLsm) Get(key []byte) ([]byte, error) {
+	begin := time.Now()
+	defer func() {
+		elapsed := time.Since(begin)
+		m.metrics.getLatency.Observe(float64(elapsed.Milliseconds()))
+		m.metrics.getTotal.Add(1)
+	}()
 	tx := NewReadTx(m.inner, m.mvcc, false)
 	defer tx.Rollback()
 	return tx.Get(key)
 }
 
-// update functional transactions automatic processing rollback and commit
-func (m *MiniLsm) Update(fn func(tx WriteTx) error) error {
+// Update functional transactions automatic processing rollback and commit
+func (m *MiniLsm) update(fn func(tx WriteTx) error) error {
+
 	tx := NewWriteTx(m.inner, m.mvcc, false)
 	defer tx.Rollback()
 
@@ -92,55 +108,100 @@ func (m *MiniLsm) Update(fn func(tx WriteTx) error) error {
 	return tx.Commit()
 }
 
-//func (m *MiniLsm) Delete(key []byte) error {
-//	return m.inner.delete(key)
-//}
-
-//	func (m *MiniLsm) Scan(start, end []byte) (*Iterator, error) {
-//		return m.inner.scan(start, end)
-//	}
-//
 // Delete implements logical deletion by writing a tombstone record
 func (m *MiniLsm) Delete(key []byte) error {
-	if len(key) == 0 {
-		return errors.New("empty key")
-	}
-
-	// Create a deletion marker using an empty value
-	// The Delete operation is implemented as a Put with a special deletion marker
-	//pbKey, err := proto.Marshal(&pb.Key{
-	//	Key:       key,
-	//	Timestamp: uint64(time.Now().UnixNano()),
-	//})
-	//if err != nil {
-	//	return fmt.Errorf("failed to marshal key: %w", err)
-	//}
-	//
-	//// Create a value with deletion marker
-	//pbValue, err := proto.Marshal(&pb.Value{
-	//	Value:     nil,
-	//	IsDeleted: true,
-	//})
-	//if err != nil {
-	//	return fmt.Errorf("failed to marshal value: %w", err)
-	//}
-	pbKey := &pb.Key{
-		Key:       key,
-		Timestamp: uint64(time.Now().UnixNano()),
-	}
-
-	// Create a value with deletion marker
-	pbValue := &pb.Value{
-		Value:     nil,
-		IsDeleted: true,
-	}
-
-	// Use Put operation to writeTx the deletion marker
-	return m.inner.state.memTable.Put(pbKey,
-		pbValue)
+	begin := time.Now()
+	defer func() {
+		elapsed := time.Since(begin)
+		m.metrics.deleteLatency.Observe(float64(elapsed.Milliseconds()))
+		m.metrics.deleteTotal.Add(1)
+	}()
+	return m.update(func(tx WriteTx) error {
+		return tx.Delete(key)
+	})
 }
 
 // Scan creates an iterator to scan over a range of keys
-func (m *MiniLsm) Scan(start, end []byte) (*Iterator[iterators.StorageIterator], error) {
-	return m.inner.Scan(start, end)
+func (m *MiniLsm) Scan(start, end []byte, limit int64) ([][]byte, [][]byte, error) {
+	begin := time.Now()
+	defer func() {
+		elapsed := time.Since(begin)
+		m.metrics.scanLatency.Observe(float64(elapsed.Milliseconds()))
+		m.metrics.scanTotal.Add(1)
+	}()
+	tx := NewReadTx(m.inner, m.mvcc, false)
+	defer tx.Rollback()
+	return tx.Scan(start, end, limit)
+}
+
+// Close gracefully shuts down the LSM storage engine and releases all resources.
+// It ensures all pending writes are flushed to disk before shutdown.
+func (m *MiniLsm) Close() error {
+	// Set stopping flag to prevent new operations
+	close(m.stopping)
+
+	// Acquire write lock to ensure no new tasks are added to background workers
+	m.wgMu.Lock()
+	defer m.wgMu.Unlock()
+
+	m.lg.Info("closing LSM storage engine")
+
+	// Wait for background tasks to complete
+	doneCh := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(doneCh)
+	}()
+
+	// Flush any pending data in the memtable
+	if err := m.inner.triggerFlush(); err != nil {
+		m.lg.Error("error flushing memtable during shutdown", zap.Error(err))
+		// Continue with shutdown despite error
+	}
+
+	// Close all opened SSTables
+	for id, sst := range m.inner.openedSstables {
+		if err := sst.Close(); err != nil {
+			m.lg.Warn("error closing SSTable", zap.Uint32("id", id), zap.Error(err))
+		}
+	}
+	// Close inner storage
+	if err := m.inner.Close(); err != nil {
+		m.lg.Error("error closing inner storage", zap.Error(err))
+		return err
+	}
+
+	// Wait for background tasks with timeout
+	select {
+	case <-doneCh:
+		m.lg.Info("all background tasks completed")
+	case <-time.After(5 * time.Second):
+		m.lg.Warn("timeout waiting for background tasks to complete, forcing shutdown")
+	}
+
+	// Close the manifest
+	if m.inner.manifest != nil {
+		if err := m.inner.manifest.Close(); err != nil {
+			m.lg.Error("error closing manifest", zap.Error(err))
+			return err
+		}
+	}
+
+	// Close all opened SSTable iterators
+	//for id, iter := range m.inner.openedIterators {
+	//	if err := iter.Close(); err != nil {
+	//		m.lg.Warn("error closing SSTable iterator", zap.Uint32("id", id), zap.Error(err))
+	//	}
+	//}
+
+	m.lg.Info("LSM storage engine closed successfully")
+	return nil
+}
+
+func (m *MiniLsm) WriteTx() WriteTx {
+	return NewWriteTx(m.inner, m.mvcc, true)
+}
+
+func (m *MiniLsm) ReadTx() ReadTx {
+	return NewReadTx(m.inner, m.mvcc, true)
 }

@@ -5,7 +5,17 @@ import (
 	"mini_lsm/iterators"
 )
 
-// iterators.StorageIterator defines the interface for storage iteration
+type MemTableIterator interface {
+	iterators.StorageIterator
+}
+
+type MergeIterator struct {
+	MemTableIterator
+}
+
+type LsmIterator struct {
+	inner *iterators.TwoMergeIterator
+}
 
 // Iterator represents a way to iterate over the LSM tree
 type Iterator[I iterators.StorageIterator] struct {
@@ -15,6 +25,7 @@ type Iterator[I iterators.StorageIterator] struct {
 	valid bool
 }
 
+// NewIterator for Scan
 func NewIterator[I iterators.StorageIterator](iters []I, start, end []byte, valid bool) *Iterator[I] {
 	// start by creating an internal one MergeIterator
 	mergeIter := iterators.NewMergeIterator(iters)
@@ -71,18 +82,6 @@ func (it *Iterator[I]) Close() error {
 	it.valid = false
 	it.inner = nil
 	return nil
-}
-
-type MemTableIterator interface {
-	iterators.StorageIterator
-}
-
-type MergeIterator struct {
-	MemTableIterator
-}
-
-type LsmIterator struct {
-	inner *iterators.TwoMergeIterator
 }
 
 func NewLsmIterator(inner *iterators.TwoMergeIterator) (*LsmIterator, error) {

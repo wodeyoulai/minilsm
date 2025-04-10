@@ -21,13 +21,13 @@ import (
 
 // File format constants
 const (
-	// Version tag placed at beginning of file
+	// FORMAT_VERSION Version tag placed at beginning of file
 	FORMAT_VERSION = 1
 
-	// Align to 4KB boundary for direct IO
+	// BLOCK_ALIGN_SIZE Align to 4KB boundary for direct IO
 	BLOCK_ALIGN_SIZE = 4096
 
-	// Footer size (4 bytes for meta offset + 8 bytes for max timestamp)
+	// FOOTER_SIZE Footer size (4 bytes for meta offset + 8 bytes for max timestamp)
 	FOOTER_SIZE = 12
 )
 
@@ -209,17 +209,23 @@ func CreateMetaOnlySST(id uint32, fileSize uint32, firstKey, lastKey []byte) *SS
 func (sst *SSTable) MayContain(key []byte) bool {
 	sst.mu.RLock()
 	defer sst.mu.RUnlock()
-
 	if sst.closed {
+		return false
+	}
+	if len(key) < 16 {
 		return false
 	}
 
 	// Check key range
-	begin := bytes.Compare(sst.firstKey, key)
-	end := bytes.Compare(sst.lastKey, key)
+	begin := bytes.Compare(sst.firstKey[:len(sst.firstKey)-16], key[:len(key)-16])
+	end := bytes.Compare(sst.lastKey[:len(sst.lastKey)-16], key[:len(key)-16])
 
 	// Key is within range if equal to first/last or between them
 	return (begin <= 0 && end >= 0)
+}
+
+func (sst *SSTable) Empty() bool {
+	return len(sst.firstKey) == 0 && len(sst.lastKey) == 0
 }
 
 // ReadBlockCached reads a block by index, using cache if available
@@ -415,8 +421,6 @@ func (sst *SSTable) Close() error {
 
 	return nil
 }
-
-// BloomFilter structure for key existence checking
 
 // BlockCache structure for caching blocks in memory
 type BlockCache struct {

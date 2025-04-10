@@ -11,7 +11,8 @@ func keyMarshal(key *pb.Key) []byte {
 	copy(out, key.Key)
 	binary.BigEndian.PutUint64(out[len(key.Key):], key.Version)
 
-	// ^ for compare
+	// ^key.Timestamp we can keep the order of new->old:
+	// a-1111 is front of a-1110
 	binary.BigEndian.PutUint64(out[len(key.Key)+8:], ^key.Timestamp)
 	return out
 }

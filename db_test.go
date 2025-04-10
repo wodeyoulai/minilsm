@@ -2,6 +2,7 @@ package mini_lsm
 
 import (
 	"fmt"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 	"log"
 	"math/rand"
@@ -45,7 +46,8 @@ func setupLsmForBenchmark(b *testing.B) (*MiniLsm, string) {
 	}
 
 	// 创建LSM实例
-	lsm, err := NewMiniLsm(logger, tempDir, opts)
+	registry := prometheus.NewRegistry()
+	lsm, err := NewMiniLsm(logger, tempDir, registry, opts)
 	if err != nil {
 		os.RemoveAll(tempDir)
 		b.Fatalf("Failed to create LSM: %v", err)
@@ -103,15 +105,147 @@ func BenchmarkStorageInnerPut(b *testing.B) {
 
 // BenchmarkStorageInnerPutValueSizes 测试不同大小值的写入性能
 func BenchmarkStorageInnerPutValueSizes(b *testing.B) {
-	valueSizes := []int{16, 128, 1024, 4096, 16384}
+	valueSizes := []int{16, 128, 1024, 1000, 1000, 4096, 16384}
 	//valueSizes := []int{16384}
 
+	//go func() {
+	//	log.Println(http.ListenAndServe("localhost:6060", nil))
+	//}()
+	// 启用锁争用和阻塞分析
+	runtime.SetMutexProfileFraction(1)           // 收集所有锁争用事件
+	runtime.SetBlockProfileRate(1 * 1000 * 1000) // 每 1ms 的阻塞采样一次
+
+	// 启动 pprof 的 HTTP 服务器
 	go func() {
+		log.Println("Starting pprof server on :6060")
 		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
+
+	// CPU profiling
+	cpuFile, err := os.Create("cpu.pprof")
+	if err != nil {
+		log.Fatal(err)
+	}
+	pprof.StartCPUProfile(cpuFile)
+	defer pprof.StopCPUProfile()
+
+	// 确保程序退出前写入堆、锁和阻塞的 profile
+	defer func() {
+		// 堆分配 profile
+		heapFile, err := os.Create("heap.pprof")
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.WriteHeapProfile(heapFile)
+		heapFile.Close()
+
+		// goroutine profile
+		goroutineFile, err := os.Create("goroutine.pprof")
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.Lookup("goroutine").WriteTo(goroutineFile, 0)
+		goroutineFile.Close()
+
+		// 锁争用 profile
+		mutexFile, err := os.Create("mutex.pprof")
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.Lookup("mutex").WriteTo(mutexFile, 0)
+		mutexFile.Close()
+
+		// 阻塞 profile
+		blockFile, err := os.Create("block.pprof")
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.Lookup("block").WriteTo(blockFile, 0)
+		blockFile.Close()
 	}()
 	f, _ := os.Create("traceBlock.out")
 	trace.Start(f)
 	defer trace.Stop()
+	for _, size := range valueSizes {
+		b.Run(fmt.Sprintf("ValueSize-%dB", size), func(b *testing.B) {
+			lsm, tempDir := setupLsmForBenchmark(b)
+			defer os.RemoveAll(tempDir)
+
+			// 准备固定大小的值
+			value := make([]byte, size)
+			for i := 0; i < size; i++ {
+				value[i] = byte(i % 256)
+			}
+
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+
+				key := []byte(fmt.Sprintf("key-size-%d-%08d", size, i))
+				if err := lsm.inner.put(key, value); err != nil {
+					b.Fatalf("Put failed with value size %d: %v", size, err)
+				}
+			}
+
+			b.StopTimer()
+		})
+	}
+}
+func BenchmarkStorageInnerPutValueSizesNoPProf(b *testing.B) {
+	valueSizes := []int{16, 128, 1024, 1000, 1000, 4096, 16384}
+	//valueSizes := []int{16384}
+
+	runtime.SetMutexProfileFraction(1)           // 收集所有锁争用事件
+	runtime.SetBlockProfileRate(1 * 1000 * 1000) // 每 1ms 的阻塞采样一次
+
+	// 启动 pprof 的 HTTP 服务器
+	go func() {
+		log.Println("Starting pprof server on :6060")
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
+
+	// CPU profiling
+	cpuFile, err := os.Create("cpu.pprof")
+	if err != nil {
+		log.Fatal(err)
+	}
+	pprof.StartCPUProfile(cpuFile)
+	defer pprof.StopCPUProfile()
+
+	// 确保程序退出前写入堆、锁和阻塞的 profile
+	defer func() {
+		// 堆分配 profile
+		heapFile, err := os.Create("heap.pprof")
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.WriteHeapProfile(heapFile)
+		heapFile.Close()
+
+		// goroutine profile
+		goroutineFile, err := os.Create("goroutine.pprof")
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.Lookup("goroutine").WriteTo(goroutineFile, 0)
+		goroutineFile.Close()
+
+		// 锁争用 profile
+		mutexFile, err := os.Create("mutex.pprof")
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.Lookup("mutex").WriteTo(mutexFile, 0)
+		mutexFile.Close()
+
+		// 阻塞 profile
+		blockFile, err := os.Create("block.pprof")
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.Lookup("block").WriteTo(blockFile, 0)
+		blockFile.Close()
+	}()
 	for _, size := range valueSizes {
 		b.Run(fmt.Sprintf("ValueSize-%dB", size), func(b *testing.B) {
 			lsm, tempDir := setupLsmForBenchmark(b)

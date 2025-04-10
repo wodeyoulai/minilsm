@@ -14,7 +14,9 @@ type StorageIterator interface {
 	// Next moves to the next position
 	Next() error
 
+	Close() error
 	// NumActiveIterators returns the number of underlying active iterators
 	// Default implementation returns 1
 	//NumActiveIterators() int
+
 }

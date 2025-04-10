@@ -11,6 +11,7 @@ import (
 var (
 	ErrInvalidIterator = errors.New("invalid block iterator state")
 	ErrEndOfIterator   = errors.New("end of block iterator")
+	ErrNilBlock        = errors.New("block cannot be nil")
 )
 
 // BlockIterator provides iteration over entries in a Block
@@ -40,7 +41,7 @@ type BlockIterator struct {
 // NewBlockIterator creates a new block iterator
 func NewBlockIterator(block *Block) (*BlockIterator, error) {
 	if block == nil {
-		return nil, errors.New("block cannot be nil")
+		return nil, ErrNilBlock
 	}
 
 	return &BlockIterator{
@@ -285,8 +286,9 @@ func (it *BlockIterator) Reset(block *Block) error {
 }
 
 // Close releases resources and invalidates the iterator
-func (it *BlockIterator) Close() {
+func (it *BlockIterator) Close() error {
 	it.block = nil
 	it.key = nil
 	it.valid = false
+	return nil
 }
