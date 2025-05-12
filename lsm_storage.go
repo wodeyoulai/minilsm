@@ -1,14 +1,14 @@
-package mini_lsm
+package plsm
 
 import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/wodeyoulai/plsm/iterators"
+	"github.com/wodeyoulai/plsm/pb"
+	"github.com/wodeyoulai/plsm/table"
+	"github.com/wodeyoulai/plsm/tools/fileutil"
 	"google.golang.org/protobuf/proto"
-	"mini_lsm/iterators"
-	"mini_lsm/pb"
-	"mini_lsm/table"
-	"mini_lsm/tools/fileutil"
 	"os"
 	"path"
 	"path/filepath"
@@ -35,6 +35,26 @@ type LsmStorageOptions struct {
 	Serializable   bool
 	Levels         uint32
 	MustSyncWal    bool
+}
+
+func NewDefaultLsmStorageOptions() LsmStorageOptions {
+	return LsmStorageOptions{
+		BlockSize:     4096,
+		TargetSSTSize: 1 << 20, // 1MB
+		MemTableLimit: 3,
+		CompactionOpts: CompactionOptions{
+			Strategy: TaskTypeSimple,
+			SimpleOpts: &SimpleLeveledCompactionOptions{
+				SizeRatioPercent:               200,
+				Level0FileNumCompactionTrigger: 4,
+				MaxLevels:                      7,
+				ThresholdFilesCount:            4,
+			},
+		},
+		EnableWAL:    true,
+		Serializable: true,
+		Levels:       7,
+	}
 }
 
 // LsmStorageInner internal implementation of storage engine

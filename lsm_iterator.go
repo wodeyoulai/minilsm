@@ -1,8 +1,8 @@
-package mini_lsm
+package plsm
 
 import (
 	"bytes"
-	"mini_lsm/iterators"
+	"github.com/wodeyoulai/plsm/iterators"
 )
 
 type MemTableIterator interface {

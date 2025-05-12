@@ -1,11 +1,11 @@
-package mini_lsm
+package plsm
 
 import (
 	"bytes"
 	"fmt"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/wodeyoulai/plsm/pb"
 	"go.uber.org/zap"
-	"mini_lsm/pb"
 	_ "net/http/pprof"
 	"os"
 	"runtime/trace"
@@ -31,9 +31,9 @@ func TestWriteTxBasic(t *testing.T) {
 
 	registry := prometheus.NewRegistry()
 
-	lsm, err := NewMiniLsm(logger, tempDir, registry, opts)
+	lsm, err := NewPLsm(logger, tempDir, registry, opts)
 	if err != nil {
-		t.Fatalf("Failed to create MiniLsm: %v", err)
+		t.Fatalf("Failed to create PLsm: %v", err)
 	}
 	defer lsm.Close()
 

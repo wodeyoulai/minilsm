@@ -1,4 +1,4 @@
-module mini_lsm
+module github.com/wodeyoulai/plsm
 
 go 1.23.4
 

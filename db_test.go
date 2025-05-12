@@ -1,4 +1,4 @@
-package mini_lsm
+package plsm
 
 import (
 	"fmt"
@@ -17,7 +17,7 @@ import (
 )
 
 // setupLsmForBenchmark 创建一个用于测试的LSM实例
-func setupLsmForBenchmark(b *testing.B) (*MiniLsm, string) {
+func setupLsmForBenchmark(b *testing.B) (*PLsm, string) {
 	// 创建临时目录
 	tempDir, err := os.MkdirTemp("", "lsm-benchmark")
 	if err != nil {
@@ -47,7 +47,7 @@ func setupLsmForBenchmark(b *testing.B) (*MiniLsm, string) {
 
 	// 创建LSM实例
 	registry := prometheus.NewRegistry()
-	lsm, err := NewMiniLsm(logger, tempDir, registry, opts)
+	lsm, err := NewPLsm(logger, tempDir, registry, opts)
 	if err != nil {
 		os.RemoveAll(tempDir)
 		b.Fatalf("Failed to create LSM: %v", err)

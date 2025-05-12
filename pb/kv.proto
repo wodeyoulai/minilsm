@@ -1,6 +1,6 @@
 syntax = "proto3";
 package kv;
-option go_package = "mini_lsm/pb;pb";
+option go_package = "github.com/wodeyoulai/plsm/pb;pb";
 
 // MVCCKey
 message Key {

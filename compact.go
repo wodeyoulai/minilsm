@@ -1,4 +1,4 @@
-package mini_lsm
+package plsm
 
 type TaskType int
 

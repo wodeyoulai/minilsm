@@ -1,10 +1,10 @@
-package mini_lsm
+package plsm
 
 import (
 	"bytes"
 	"fmt"
-	"mini_lsm/pb"
-	"mini_lsm/table"
+	"github.com/wodeyoulai/plsm/pb"
+	"github.com/wodeyoulai/plsm/table"
 	"os"
 	"path/filepath"
 	"reflect"

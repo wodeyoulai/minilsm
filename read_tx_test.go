@@ -1,4 +1,4 @@
-package mini_lsm
+package plsm
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ func setupTestLogger() *zap.Logger {
 	return logger
 }
 
-func setupTestStorage(t *testing.T) (*MiniLsm, string) {
+func setupTestStorage(t *testing.T) (*PLsm, string) {
 	// Create a temporary directory for the test
 	tempDir, err := os.MkdirTemp("", "mini-lsm-test-*")
 	if err != nil {
@@ -45,7 +45,7 @@ func setupTestStorage(t *testing.T) (*MiniLsm, string) {
 	// Create storage
 	registry := prometheus.NewRegistry()
 
-	storage, err := NewMiniLsm(logger, tempDir, registry, opts)
+	storage, err := NewPLsm(logger, tempDir, registry, opts)
 	if err != nil {
 		os.RemoveAll(tempDir)
 		t.Fatalf("Failed to create storage: %v", err)

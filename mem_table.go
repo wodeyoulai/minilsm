@@ -1,4 +1,4 @@
-package mini_lsm
+package plsm
 
 import (
 	"bytes"
@@ -6,13 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"github.com/huandu/skiplist"
+	"github.com/wodeyoulai/plsm/iterators"
+	"github.com/wodeyoulai/plsm/pb"
+	"github.com/wodeyoulai/plsm/table"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 	"log"
 	"math"
-	"mini_lsm/iterators"
-	"mini_lsm/pb"
-	"mini_lsm/table"
 	"reflect"
 	"sync"
 )

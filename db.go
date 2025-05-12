@@ -1,4 +1,4 @@
-package mini_lsm
+package plsm
 
 import (
 	"context"
@@ -16,8 +16,8 @@ type Db interface {
 	Close() error
 }
 
-// MiniLsm exposed storage engine interface
-type MiniLsm struct {
+// PLsm exposed storage engine interface
+type PLsm struct {
 	lg                 *zap.Logger
 	inner              *LsmStorageInner
 	stopping           chan struct{}
@@ -30,14 +30,14 @@ type MiniLsm struct {
 	//compactionThread   *sync.WaitGroup
 }
 
-// NewMiniLsm create a new storage engine instance
-func NewMiniLsm(log *zap.Logger, path string, registry *prometheus.Registry, opts LsmStorageOptions) (*MiniLsm, error) {
+// NewPLsm create a new storage engine instance
+func NewPLsm(log *zap.Logger, path string, registry *prometheus.Registry, opts LsmStorageOptions) (*PLsm, error) {
 	inner, err := newLsmStorageInner(log, path, &opts)
 	if err != nil {
 		return nil, err
 	}
 	mvcc := NewLsmMvccInner(inner.recoverTimeStamp(), nil)
-	lsm := &MiniLsm{
+	lsm := &PLsm{
 		lg:                 log,
 		inner:              inner,
 		stopping:           make(chan struct{}),
@@ -55,7 +55,7 @@ func NewMiniLsm(log *zap.Logger, path string, registry *prometheus.Registry, opt
 	return lsm, nil
 }
 
-func (m *MiniLsm) goAttach(f func()) {
+func (m *PLsm) goAttach(f func()) {
 	m.wgMu.RLock() // this blocks with ongoing close(m.stopping)
 	defer m.wgMu.RUnlock()
 	select {
@@ -72,7 +72,7 @@ func (m *MiniLsm) goAttach(f func()) {
 	}()
 }
 
-func (m *MiniLsm) Put(key, value []byte) error {
+func (m *PLsm) Put(key, value []byte) error {
 	begin := time.Now()
 	defer func() {
 		elapsed := time.Since(begin)
@@ -84,7 +84,7 @@ func (m *MiniLsm) Put(key, value []byte) error {
 	})
 }
 
-func (m *MiniLsm) Get(key []byte) ([]byte, error) {
+func (m *PLsm) Get(key []byte) ([]byte, error) {
 	begin := time.Now()
 	defer func() {
 		elapsed := time.Since(begin)
@@ -97,7 +97,7 @@ func (m *MiniLsm) Get(key []byte) ([]byte, error) {
 }
 
 // Update functional transactions automatic processing rollback and commit
-func (m *MiniLsm) update(fn func(tx WriteTx) error) error {
+func (m *PLsm) update(fn func(tx WriteTx) error) error {
 
 	tx := NewWriteTx(m.inner, m.mvcc, false)
 	defer tx.Rollback()
@@ -109,7 +109,7 @@ func (m *MiniLsm) update(fn func(tx WriteTx) error) error {
 }
 
 // Delete implements logical deletion by writing a tombstone record
-func (m *MiniLsm) Delete(key []byte) error {
+func (m *PLsm) Delete(key []byte) error {
 	begin := time.Now()
 	defer func() {
 		elapsed := time.Since(begin)
@@ -122,7 +122,7 @@ func (m *MiniLsm) Delete(key []byte) error {
 }
 
 // Scan creates an iterator to scan over a range of keys
-func (m *MiniLsm) Scan(start, end []byte, limit int64) ([][]byte, [][]byte, error) {
+func (m *PLsm) Scan(start, end []byte, limit int64) ([][]byte, [][]byte, error) {
 	begin := time.Now()
 	defer func() {
 		elapsed := time.Since(begin)
@@ -136,7 +136,7 @@ func (m *MiniLsm) Scan(start, end []byte, limit int64) ([][]byte, [][]byte, erro
 
 // Close gracefully shuts down the LSM storage engine and releases all resources.
 // It ensures all pending writes are flushed to disk before shutdown.
-func (m *MiniLsm) Close() error {
+func (m *PLsm) Close() error {
 	// Set stopping flag to prevent new operations
 	close(m.stopping)
 
@@ -198,10 +198,10 @@ func (m *MiniLsm) Close() error {
 	return nil
 }
 
-func (m *MiniLsm) WriteTx() WriteTx {
+func (m *PLsm) WriteTx() WriteTx {
 	return NewWriteTx(m.inner, m.mvcc, true)
 }
 
-func (m *MiniLsm) ReadTx() ReadTx {
+func (m *PLsm) ReadTx() ReadTx {
 	return NewReadTx(m.inner, m.mvcc, true)
 }

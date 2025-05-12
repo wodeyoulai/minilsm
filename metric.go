@@ -1,10 +1,10 @@
-package mini_lsm
+package plsm
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// In lsm_storage.go for the MiniLsm struct
+// In lsm_storage.go for the PLsm struct
 type MiniLsmMetrics struct {
 	// Operation counters
 	putTotal    prometheus.Counter

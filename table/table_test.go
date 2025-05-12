@@ -2,8 +2,8 @@ package table
 
 //
 //import (
-//	"mini_lsm/block"
-//	"mini_lsm/tools/lru"
+//	"github.com/wodeyoulai/plsm/block"
+//	"github.com/wodeyoulai/plsm/tools/lru"
 //	"os"
 //	"reflect"
 //	"sync"

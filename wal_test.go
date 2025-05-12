@@ -1,4 +1,4 @@
-package mini_lsm
+package plsm
 
 import (
 	"bytes"

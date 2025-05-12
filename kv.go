@@ -1,8 +1,8 @@
-package mini_lsm
+package plsm
 
 import (
 	"encoding/binary"
-	"mini_lsm/pb"
+	"github.com/wodeyoulai/plsm/pb"
 )
 
 func keyMarshal(key *pb.Key) []byte {

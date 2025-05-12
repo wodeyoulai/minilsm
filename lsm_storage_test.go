@@ -1,10 +1,10 @@
-package mini_lsm
+package plsm
 
 import (
 	"bytes"
 	"fmt"
 	"github.com/prometheus/client_golang/prometheus"
-	"mini_lsm/pb"
+	"github.com/wodeyoulai/plsm/pb"
 	"os"
 	"path/filepath"
 	"sync"
@@ -20,7 +20,7 @@ import (
 
 // TestHelper for setting up and cleaning up test environments
 type testHelper struct {
-	lsm     *MiniLsm
+	lsm     *PLsm
 	tempDir string
 	cleanup func()
 }
@@ -54,8 +54,8 @@ func newTestHelper(t *testing.T) *testHelper {
 
 	// Create LSM
 	registry := prometheus.NewRegistry()
-	lsm, err := NewMiniLsm(logger, tempDir, registry, opts)
-	require.NoError(t, err, "Failed to create MiniLsm")
+	lsm, err := NewPLsm(logger, tempDir, registry, opts)
+	require.NoError(t, err, "Failed to create PLsm")
 
 	// Setup cleanup function
 	cleanup := func() {
@@ -344,7 +344,7 @@ func TestLsmStorageInnerRecovery(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 
 	registry := prometheus.NewRegistry()
-	newLsm, err := NewMiniLsm(logger, tempDir, registry, *inner.options)
+	newLsm, err := NewPLsm(logger, tempDir, registry, *inner.options)
 
 	require.NoError(t, err, "Creating new LSM should succeed")
 

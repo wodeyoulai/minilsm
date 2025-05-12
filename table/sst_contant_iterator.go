@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"mini_lsm/block"
-	"mini_lsm/iterators"
+	"github.com/wodeyoulai/plsm/block"
+	"github.com/wodeyoulai/plsm/iterators"
 	"sync"
 )
 

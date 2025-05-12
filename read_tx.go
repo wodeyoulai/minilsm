@@ -1,9 +1,9 @@
-package mini_lsm
+package plsm
 
 import (
 	"bytes"
+	"github.com/wodeyoulai/plsm/pb"
 	"google.golang.org/protobuf/proto"
-	"mini_lsm/pb"
 	"sync/atomic"
 )
 
