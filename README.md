@@ -21,6 +21,43 @@ The Go implementation follows the same architectural principles while adapting t
 - Bloom filters for efficient key lookups
 - Customizable storage options
 
+## Getting Started
+
+Here's a basic example of how to initialize the `plsm` engine:
+
+```go
+import (
+    "log" // Added for basic error logging if zap fails initially
+
+    "github.com/prometheus/client_golang/prometheus"
+    "github.com/wodeyoulai/plsm" // Ensure this path matches your new repo name!
+    "go.uber.org/zap"
+)
+
+func main() { // Examples are often clearer within a function context
+    // Initialize logger (handle potential error properly in production)
+    logger, err := zap.NewDevelopment()
+    if err != nil {
+        log.Fatalf("can't initialize zap logger: %v", err)
+    }
+    defer logger.Sync() // Flushes buffer, if any
+
+    // Create Prometheus registry for metrics collection (optional)
+    registry := prometheus.NewRegistry()
+
+    // Define storage path (replace with your actual path)
+    storagePath := "/path/to/your/storage"
+
+    // Initialize the LSM storage engine
+    lsm, err := plsm.NewPLsm(logger, storagePath, registry, plsm.NewDefaultLsmStorageOptions())
+    if err != nil {
+        logger.Fatal("Failed to initialize PLsm engine", zap.Error(err))
+        // Handle error appropriately (e.g., exit, return error)
+    }
+    // select {} // Block forever if it's a server
+
+```
+
 ## Architecture
 
 MiniLSM is structured around these core components:
