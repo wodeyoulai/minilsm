@@ -343,11 +343,11 @@ func (m *MTable) PutBatch(data []*KeyValue) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, kv := range data {
+	for i, kv := range data {
 		//element := pbKeytoSkl(keyVal.Key)
 		element := pbKeytoSkl(kv.Key)
-		m.skl.Set(element, kv.Value)
-		m.approximateSize += element.size() + uint32(len(kv.Value.Value))
+		m.skl.Set(element, batchData.Entries[i].Value)
+		m.approximateSize += element.size() + uint32(len(batchData.Entries[i].Value))
 	}
 	// This is optional but helps with determining when to flush
 	return nil
